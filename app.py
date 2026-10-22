@@ -25,13 +25,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. KHỞI TẠO CƠ SỞ DỮ LIỆU BỀN VỮNG (SQLITE)
+# 1. KHỞI TẠO CƠ SỞ DỮ LIỆU SQLITE
 # ==========================================
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
     
-    # Kiểm tra và làm mới bảng nếu cấu trúc cột bị cũ
+    # Đảm bảo schema luôn đúng
     try:
         cursor.execute("SELECT owner_did FROM market_pool LIMIT 1")
     except sqlite3.OperationalError:
@@ -119,17 +119,17 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 
 # ==========================================
-# 2. XÁC THỰC DANH TÍNH TIDECLOAK (LOGIN / REGISTER)
+# 2. XÁC THỰC DANH TÍNH TIDECLOAK
 # ==========================================
 if st.session_state.auth_user is None:
     st.title("🛡️ TrustGate AI — Cổng Xác Thực TideCloak")
-    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp[cite: 1, 7].")
+    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp.")
     
     t1, t2 = st.tabs(["🔐 Đăng Nhập Bằng TideCloak DID", "📝 Cấp Mới Danh Tính Doanh Nghiệp"])
     
     with t1:
         st.subheader("Xác thực bằng Danh tính số phân tán (DID)")
-        st.info("💡 **Tài khoản có sẵn để test nhanh:**\n\n* **Bên Bán:** `did:tide:vn_lamvien_7a8f90b`\n* **Bên Mua:** `did:tide:kh_mekong_3d4e12a`")
+        st.info("💡 **Tài khoản demo sẵn có:**\n\n* **Bên Bán:** `did:tide:vn_lamvien_7a8f90b`\n* **Bên Mua:** `did:tide:kh_mekong_3d4e12a`")
         
         with st.form("form_tide_login"):
             did_inp = st.text_input("Nhập mã TideCloak DID:", placeholder="did:tide:vn_lamvien_7a8f90b")
@@ -161,7 +161,7 @@ if st.session_state.auth_user is None:
     with t2:
         st.subheader("Khởi tạo danh tính phân tán mới")
         with st.form("form_tide_reg"):
-            r_name = st.text_input("Họ và tên người đại diện ký duyệt")[cite: 11]
+            r_name = st.text_input("Họ và tên người đại diện ký duyệt")
             r_org = st.text_input("Tên doanh nghiệp / Hợp tác xã")
             r_role = st.selectbox("Vai trò giao dịch", ["Bên Bán (Việt Nam)", "Bên Mua (Campuchia)"])
             btn_reg = st.form_submit_button("Cấp Phát Mã Tide DID Mới")
@@ -343,6 +343,7 @@ with tab2:
                     st.rerun()
 
             st.markdown("---")
+            # KÍCH HOẠT AI KHI BẾ TẮC
             st.markdown("### 2. Bất Đồng Quan Điểm? Nhờ AI Phân Tích")
             st.caption("AI hoạt động trong vùng cách ly, tính toán chi phí vận chuyển ($35/tấn) để đề xuất mức giá cân bằng lợi ích cho cả hai bên[cite: 7, 11].")
             
@@ -369,6 +370,8 @@ with tab2:
             st.metric("Mức Giá Dự Kiến Chốt", f"${target_close_price:,.1f} / tấn")
             
             col_s_btn, col_b_btn = st.columns(2)
+            
+            # CỘT NGƯỜI BÁN KÝ
             with col_s_btn:
                 if d_s_sign == 1:
                     st.success("✅ Người bán đã ký")
@@ -380,7 +383,13 @@ with tab2:
                             st.rerun()
                     else:
                         st.warning("Chờ Người Bán ký...")
+                        # Nút bấm giả lập đối tác ký từ xa phục vụ video demo góc quay đơn
+                        if st.button("⚡ [Demo] Giả lập Người Bán ký từ xa", key=f"sim_s_sign_{d_id}"):
+                            cursor.execute("UPDATE deals SET seller_signed = 1 WHERE id = ?", (d_id,))
+                            conn.commit()
+                            st.rerun()
                         
+            # CỘT NGƯỜI MUA KÝ
             with col_b_btn:
                 if d_b_sign == 1:
                     st.success("✅ Người mua đã ký")
@@ -392,6 +401,11 @@ with tab2:
                             st.rerun()
                     else:
                         st.warning("Chờ Người Mua ký...")
+                        # Nút bấm giả lập đối tác ký từ xa phục vụ video demo góc quay đơn
+                        if st.button("⚡ [Demo] Giả lập Người Mua ký từ xa", key=f"sim_b_sign_{d_id}"):
+                            cursor.execute("UPDATE deals SET buyer_signed = 1 WHERE id = ?", (d_id,))
+                            conn.commit()
+                            st.rerun()
             
             st.markdown("---")
             st.markdown("#### Trạng Thái Hiệu Lực Của Hợp Đồng:")
