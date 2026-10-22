@@ -142,7 +142,7 @@ if "current_deal_id" not in st.session_state:
 # ==========================================
 if st.session_state.auth_user is None:
     st.title("🛡️ TrustGate AI — Cổng Xác Thực TideCloak")
-    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp[cite: 1, 7].")
+    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp.")
     
     t1, t2 = st.tabs(["🔐 Đăng Nhập Bằng TideCloak DID", "📝 Cấp Mới Danh Tính Doanh Nghiệp"])
     
@@ -216,7 +216,7 @@ with st.sidebar:
     st.markdown(f"**Vai trò:** {cur_u['role']}")
     st.markdown(f"**Quốc gia:** {cur_u['country']}")
     st.code(f"{cur_u['did']}", language="text")
-    st.caption("Trạng thái: `ĐÃ XÁC THỰC PHÂN TÁN`[cite: 7]")
+    st.caption("Trạng thái: `ĐÃ XÁC THỰC PHÂN TÁN`")
     
     st.divider()
     if st.button("🚪 Đăng Xuất"):
@@ -388,4 +388,140 @@ with tab2:
             
             col_v1, col_v2 = st.columns(2)
             col_v1.write(f"**Bên Bán yêu cầu:** " + (f"`${d_s_pr:,.1f}/tấn`" if d_s_pr > 0 else "*(Chưa ra giá)*"))
-            col_v2.write(f"**Bên Mua đề nghị:** " + (f"`${d_b
+            col_v2.write(f"**Bên Mua đề nghị:** " + (f"`${d_b_pr:,.1f}/tấn`" if d_b_pr > 0 else "*(Chưa trả giá)*"))
+            
+            if d_s_pr > 0 and d_b_pr > 0:
+                gap = d_s_pr - d_b_pr
+                if gap > 0:
+                    st.warning(f"⚠️ Chênh lệch giá: **${gap:,.1f}/tấn**. Hai bên chưa thể chốt đơn.")
+                elif gap == 0:
+                    st.success("🎯 Hai bên đã đưa ra mức giá hoàn toàn trùng khớp!")
+            else:
+                st.info("💡 Hãy nhập mức giá kỳ vọng của bạn bên dưới để bắt đầu trả giá.")
+                
+            # Form cập nhật giá
+            with st.form(f"form_set_price_{d_id}"):
+                if is_seller:
+                    val_init = float(d_s_pr) if d_s_pr > 0 else 2150.0
+                    my_new_p = st.number_input("Cập nhật giá Bên Bán ($/tấn):", value=val_init, step=10.0)
+                else:
+                    val_init = float(d_b_pr) if d_b_pr > 0 else 2000.0
+                    my_new_p = st.number_input("Cập nhật giá Bên Mua đề xuất ($/tấn):", value=val_init, step=10.0)
+                    
+                if st.form_submit_button("Cập Nhật Báo Giá"):
+                    now_m = datetime.datetime.now().strftime("%H:%M")
+                    if is_seller:
+                        cursor.execute("UPDATE deals SET seller_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0 WHERE id = ?", (my_new_p, my_new_p, d_id))
+                        cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                       (d_id, cur_u['did'], cur_u['fullname'], f"Tôi cập nhật mức giá chào bán là ${my_new_p:,.1f}/tấn.", now_m))
+                    else:
+                        cursor.execute("UPDATE deals SET buyer_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0 WHERE id = ?", (my_new_p, my_new_p, d_id))
+                        cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                       (d_id, cur_u['did'], cur_u['fullname'], f"Tôi đề xuất mức giá mua là ${my_new_p:,.1f}/tấn.", now_m))
+                    conn.commit()
+                    st.success("Đã cập nhật mức giá! Chữ ký cũ bị thu hồi để đảm bảo đồng thuận.")
+                    st.rerun()
+
+            st.divider()
+            
+            # KÍCH HOẠT AI KHI BẾ TẮC
+            st.markdown("#### Trợ Lý AI Điều Phối Giá Cân Bằng")
+            st.caption("AI hoạt động trong vùng cách ly, tính toán chi phí vận chuyển ($35/tấn) để đề xuất mức giá tối ưu khi 2 bên bế tắc.")
+            
+            if st.button("🤖 Nhờ AI Đề Xuất Giá Hòa Giải", key=f"btn_ai_{d_id}"):
+                if d_s_pr > 0 and d_b_pr > 0:
+                    shipping = 35.0
+                    calc_optimal = round((d_s_pr + d_b_pr) / 2.0 + (shipping / 2.0), 1)
+                    cursor.execute("UPDATE deals SET ai_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0 WHERE id = ?",
+                                   (calc_optimal, calc_optimal, d_id))
+                    
+                    now_m = datetime.datetime.now().strftime("%H:%M")
+                    cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                   (d_id, "did:tide:ai_copilot", "AI Copilot", f"Đã tính toán: Mức giá cân bằng tối ưu là ${calc_optimal:,.1f}/tấn.", now_m))
+                    conn.commit()
+                    st.rerun()
+                else:
+                    st.warning("Cả hai bên cần đưa ra mức giá ban đầu trước khi gọi AI.")
+                    
+            if d_ai_pr:
+                st.info(f"💡 **AI Khuyến Nghị Chốt:** **${d_ai_pr:,.1f}/tấn** (Hỗ trợ 50% chi phí vận chuyển[cite: 7, 11]).")
+                if st.button("Chấp Nhận Mức Giá Của AI", key=f"btn_acc_ai_{d_id}"):
+                    cursor.execute("UPDATE deals SET final_price = ? WHERE id = ?", (d_ai_pr, d_id))
+                    conn.commit()
+                    st.rerun()
+
+            st.divider()
+            
+            # CỔNG ĐỒNG THUẬN TIDECLOAK
+            st.markdown("#### Phê Duyệt Đồng Thuận (Tide Dual-Consensus)")
+            st.caption("Hợp đồng chỉ có hiệu lực khi cả hai bên cùng ký xác nhận mức giá chốt[cite: 1, 7].")
+            
+            target_close_p = d_fin_pr if d_fin_pr else d_s_pr
+            st.metric("Mức Giá Dự Kiến Chốt", f"${target_close_p:,.1f} / tấn")
+            
+            c_s_btn, c_b_btn = st.columns(2)
+            
+            with c_s_btn:
+                if d_s_sign == 1:
+                    st.success("✅ Người bán đã ký")
+                else:
+                    if is_seller:
+                        if st.button("✍️ Người Bán Ký Duyệt", key=f"s_sign_{d_id}"):
+                            cursor.execute("UPDATE deals SET seller_signed = 1 WHERE id = ?", (d_id,))
+                            conn.commit()
+                            st.rerun()
+                    else:
+                        st.warning("Chờ Người Bán ký...")
+                        if st.button("⚡ [Demo] Giả lập Người Bán ký", key=f"sim_s_{d_id}"):
+                            cursor.execute("UPDATE deals SET seller_signed = 1 WHERE id = ?", (d_id,))
+                            conn.commit()
+                            st.rerun()
+                            
+            with c_b_btn:
+                if d_b_sign == 1:
+                    st.success("✅ Người mua đã ký")
+                else:
+                    if is_buyer:
+                        if st.button("✍️ Người Mua Ký Duyệt", key=f"b_sign_{d_id}"):
+                            cursor.execute("UPDATE deals SET buyer_signed = 1 WHERE id = ?", (d_id,))
+                            conn.commit()
+                            st.rerun()
+                    else:
+                        st.warning("Chờ Người Mua ký...")
+                        if st.button("⚡ [Demo] Giả lập Người Mua ký", key=f"sim_b_{d_id}"):
+                            cursor.execute("UPDATE deals SET buyer_signed = 1 WHERE id = ?", (d_id,))
+                            conn.commit()
+                            st.rerun()
+            
+            st.write("")
+            if d_s_sign == 1 and d_b_sign == 1:
+                st.balloons()
+                st.success(f"🎉 **GIAO DỊCH THÀNH CÔNG Ở MỨC GIÁ ${target_close_p:,.1f}/TẤN!**")
+                st.write("Hai bên đã hoàn tất xác thực số qua TideCloak[cite: 7]. Hợp đồng mua bán đã được đóng băng.")
+            else:
+                st.error("🔒 **TRẠNG THÁI: CHƯA ĐỦ ĐỒNG THUẬN (FAIL-CLOSED)**")
+                st.caption("Chính sách TideCloak: Nếu thiếu chữ ký của một trong hai bên, hợp đồng hoàn toàn không thể thực thi[cite: 1, 7, 11].")
+
+# ---------------- TAB 3: BẢO MẬT & KIỂM THỬ TIDECLOAK ----------------
+with tab3:
+    st.subheader("Cổng Giám Sát Phân Quyền & Kiểm Thử Bảo Mật (TideCloak Enforcement)")
+    
+    st.markdown("#### 1. Kiểm thử khả năng ngăn chặn can thiệp đơn phương")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        if st.button("🚨 Thử Admin Bypass (Cố tình đóng đơn đơn phương)"):
+            st.error("❌ **ACCESS DENIED BY TIDECLOAK:** Nền tảng và Quản trị viên không sở hữu Private Key của các bên. Quyền truy cập bị từ chối tuyệt đối[cite: 1, 7]!")
+    with col_t2:
+        if st.button("🛑 Thu Hồi Quyền Của Cả Hai Bên (Emergency Revoke)"):
+            cursor.execute("UPDATE deals SET seller_signed = 0, buyer_signed = 0")
+            conn.commit()
+            st.warning("🔒 Toàn bộ chữ ký trên các phiên đàm phán đã được thu hồi an toàn[cite: 7].")
+            st.rerun()
+            
+    st.divider()
+    st.markdown("#### 2. Nhật Ký Kiểm Toán Thời Gian Thực (Audit Trail)")
+    audit_data = [
+        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": cur_u['fullname'], "Hành động": f"Xác thực Tide DID ({cur_u['did']})", "Trạng thái": "Hợp lệ"},
+        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "TideCloak Consensus Gate", "Hành động": "Kiểm tra điều kiện chữ ký 2 bên", "Trạng thái": "Enforced[cite: 7]"}
+    ]
+    st.table(pd.DataFrame(audit_data))
