@@ -242,7 +242,7 @@ if st.session_state.auth_user is None:
     with t2:
         st.subheader("Khởi tạo danh tính phân tán mới")
         with st.form("form_tide_reg"):
-            r_name = st.text_input("Họ và tên người đại diện ký duyệt")[cite: 11]
+            r_name = st.text_input("Họ và tên người đại diện ký duyệt")
             r_org = st.text_input("Tên doanh nghiệp / Hợp tác xã")
             r_role = st.selectbox("Vai trò giao dịch", ["Bên Bán (Việt Nam)", "Bên Mua (Campuchia)"])
             btn_reg = st.form_submit_button("Cấp Phát Mã Tide DID Mới")
@@ -284,7 +284,7 @@ with st.sidebar:
     st.markdown("### 🔑 Cấu Hình AI Copilot")
     # Tự động đọc từ secrets nếu có, hoặc cho phép nhập tay trực tiếp
     default_key = st.secrets.get("GEMINI_API_KEY", "")
-    input_api_key = st.text_input("Gemini API Key:", value=default_key, type="password", help="Dán mã API Key bắt đầu bằng AIzaSy... vào đây.")
+    input_api_key = st.text_input("Gemini API Key:", value=default_key, type="password", help="Dán mã API Key vào đây.")
     active_api_key = input_api_key.strip() if input_api_key.strip() else default_key
     
     if active_api_key:
