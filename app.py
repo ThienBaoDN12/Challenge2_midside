@@ -218,13 +218,13 @@ def get_ai_price_strategy(user_role, product, quantity, target_price, partner_pr
 
     # Fallback số học
     if "Mua" in user_role:
-        agg = round(partner_price * 0.96, 1)
+        agg = round(partner_price * 0.95, 1) if partner_price > 0 else 2100.0
         bal = round((target_price + partner_price) / 2.0 + 15.0, 1) if target_price > 0 else round(partner_price * 0.98, 1)
-        adv = f"Bên bán đang yêu cầu ${partner_price:,.1f}. Bạn có thể trả trước ${agg:,.1f}. Nếu đối phương chưa ưng, mức hòa giải tối ưu là ${bal:,.1f}."
+        adv = f"Bên bán đang chào ${partner_price:,.1f}. Bạn nên trả ép giá ở mức ${agg:,.1f}. Nếu đối phương không chịu, điểm cân bằng logistics là ${bal:,.1f}."
     else:
         agg = round(partner_price * 1.04, 1) if partner_price > 0 else round(target_price, 1)
         bal = round((target_price + partner_price) / 2.0 + 17.5, 1) if partner_price > 0 else round(target_price, 1)
-        adv = f"Bên mua đang đề nghị ${partner_price:,.1f}. Mức giá phản đòn khuyến nghị là ${agg:,.1f}, điểm chốt cân bằng là ${bal:,.1f}."
+        adv = f"Bên mua đang ép giá ở ${partner_price:,.1f}. Mức giá phản đòn khuyến nghị là ${agg:,.1f}, điểm chốt cân bằng là ${bal:,.1f}."
         
     return {"aggressive_price": agg, "balanced_price": bal, "advice": adv}
 
@@ -349,7 +349,6 @@ with st.sidebar:
 st.title("🌾 TrustGate AI — Sàn Thương Lượng Nông Sản Đa Bên")
 st.markdown("**Kiến trúc không quyền kiểm soát đơn phương (No Unilateral Control)** — Được bảo vệ bởi **TideCloak**.")
 
-# THANH ĐIỀU HƯỚNG AN TOÀN TRÁNH LỖI VALUEERROR
 nav_options = [
     "🛒 1. Sàn Thị Trường & Yêu Cầu", 
     "💬 2. Phòng Thương Lượng & Hợp Đồng", 
@@ -600,7 +599,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
             # CỬA SỔ POP-OVER TRỢ LÝ AI
             with st.popover("💡 Mở Trợ Lý Chiến Lược Giá (AI Copilot)", use_container_width=True):
                 st.markdown("#### 🤖 Trợ Lý Chiến Thuật Đàm Phán Gemini")
-                st.caption("AI phân tích giá của đối tác và gợi ý mức giá đè xuống thấp nhất có thể trước khi hòa giải.")
+                st.caption("AI phân tích giá của đối tác và gợi ý mức giá đè tối ưu trước khi hòa giải.")
                 
                 my_p = d_s_pr if is_seller else d_b_pr
                 opp_p = d_b_pr if is_seller else d_s_pr
@@ -619,10 +618,10 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     st.info(f"🎯 **Chiến thuật:** {res['advice']}")
                     
                     c_st1, c_st2 = st.columns(2)
-                    c_st1.metric("1. Đề xuất đè giá an toàn", f"${res['aggressive_price']:,.1f}/tấn")
+                    c_st1.metric("1. Đề xuất ép giá an toàn", f"${res['aggressive_price']:,.1f}/tấn")
                     c_st2.metric("2. Mức giá hòa giải logistics", f"${res['balanced_price']:,.1f}/tấn")
                     
-                    if st.button("Áp dụng mức đè giá vào Hợp đồng", key=f"apply_agg_{d_id}"):
+                    if st.button("Áp dụng mức ép giá vào Hợp đồng", key=f"apply_agg_{d_id}"):
                         cursor.execute("UPDATE deals SET final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?",
                                        (res['aggressive_price'], d_id))
                         conn.commit()
@@ -672,9 +671,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
             total_value = contract_price * qty_num
             contract_hash = hashlib.sha256(f"{d_id}_{d_prod}_{contract_price}_{d_s_did}_{d_b_did}".encode()).hexdigest()[:16]
 
-            # ==========================================================
             # 1. HỢP ĐỒNG ĐÃ ĐƯỢC 2 BÊN KÝ THÀNH CÔNG
-            # ==========================================================
             if d_s_sign == 1 and d_b_sign == 1 and d_stat != 'REJECTED' and d_stat != 'TERMINATED':
                 balloon_key = f"balloon_shown_{d_id}"
                 if balloon_key not in st.session_state:
@@ -723,9 +720,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     - Giấy chứng nhận xuất xứ (C/O) và e-Phyto đã được liên kết với mã băm hợp đồng này.
                     """)
 
-            # ==========================================================
             # 2. HỢP ĐỒNG ĐÃ ĐÓNG VĨNH VIỄN (TERMINATED)
-            # ==========================================================
             elif d_stat == 'TERMINATED':
                 st.markdown(f"""
                 <div class="paper-contract-cancelled">
@@ -743,58 +738,78 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     st.rerun()
 
             # ==========================================================
-            # 3. KHI CÓ BÊN TỪ CHỐI ĐỀ XUẤT (REJECTED) -> ĐƯA RA 2 OFFER
+            # 3. KHI HỢP ĐỒNG BỊ TỪ CHỐI (REJECTED) -> LOGIC ĐÀM PHÁN ĐÚNG VỊ THẾ
             # ==========================================================
             elif d_stat == 'REJECTED':
                 st.markdown(f"""
                 <div class="paper-contract-cancelled">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <h4 style="color:#b71c1c; margin:0;">ĐỀ XUẤT THỎA THUẬN ĐÃ BỊ TỪ CHỐI</h4>
+                        <h4 style="color:#b71c1c; margin:0;">TỜ ĐỀ XUẤT THỎA THUẬN ĐÃ BỊ TỪ CHỐI</h4>
                         <span class="stamp-badge-void">✕ ĐÃ BỊ TỪ CHỐI</span>
                     </div>
                     <hr style="border: 1px solid #ffcdd2;">
                     <p style="color:#c62828;">Mức giá đề xuất <b>${contract_price:,.1f}/tấn</b> chưa đạt được sự đồng thuận từ hai bên.</p>
-                    <p style="font-size:0.9rem; color:#555;">Hệ thống cung cấp 2 phương án xử lý tiếp theo:</p>
+                    <p style="font-size:0.9rem; color:#555;">Hệ thống cung cấp các phương án hành động phù hợp với vai trò của bạn:</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                st.markdown("#### 📌 Lựa chọn hành động tiếp theo:")
-                c_opt1, c_opt2 = st.columns(2)
+                st.markdown("#### 📌 Lựa chọn hướng xử lý tiếp theo:")
+                c_opt1, c_opt2, c_opt3 = st.columns(3)
                 
-                # OFFER 1: ĐIỀU CHỈNH GIÁ PHÙ HỢP ĐỂ ĐÀM PHÁN TIẾP
+                # PHƯƠNG ÁN 1: BÊN MUA CHỦ ĐỘNG ÉP GIÁ XUỐNG THẤP HƠN / BÊN BÁN HẠ GIÁ XUỐNG
                 with c_opt1:
-                    st.markdown("##### Phương án 1: Tiếp tục thỏa thuận")
-                    # Tự động tính toán bước nhảy giá dựa vào vai trò
-                    if is_seller:
-                        step_price = max(10.0, round(contract_price - 20.0, 1))
-                        action_label = f"📉 Hạ giá chào xuống ${step_price:,.1f}/tấn"
-                        guide_text = "Hạ giá bán xuống một chút để đưa đề xuất về gần ngân sách của Bên Mua."
+                    st.markdown("##### 1. Đưa mức giá phản đòn mới")
+                    if is_buyer:
+                        # Bên Mua từ chối giá đắt -> Chủ động ép giá xuống thấp hơn $50
+                        counter_p = max(10.0, round(contract_price - 50.0, 1))
+                        btn_txt = f"📉 Trả giá thấp hơn: ${counter_p:,.1f}/tấn"
+                        guide = f"Ép mức giá xuống ${counter_p:,.1f} để buộc Bên Bán phải cân nhắc lại."
                     else:
-                        step_price = round(contract_price + 20.0, 1)
-                        action_label = f"📈 Tăng giá mua lên ${step_price:,.1f}/tấn"
-                        guide_text = "Tăng giá mua lên một chút để nâng cao thiện chí với Bên Bán."
+                        # Bên Bán bị từ chối -> Hạ giá bán xuống $30 để cứu deal
+                        counter_p = max(10.0, round(contract_price - 30.0, 1))
+                        btn_txt = f"📉 Hạ giá bán xuống: ${counter_p:,.1f}/tấn"
+                        guide = f"Hạ giá chào xuống ${counter_p:,.1f} để đưa về gần ngân sách Bên Mua."
                         
-                    st.caption(guide_text)
-                    if st.button(action_label, key=f"btn_step_price_{d_id}"):
+                    st.caption(guide)
+                    if st.button(btn_txt, key=f"btn_counter_{d_id}"):
                         now_m = datetime.datetime.now().strftime("%H:%M")
-                        if is_seller:
-                            cursor.execute("UPDATE deals SET seller_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?",
-                                           (step_price, step_price, d_id))
-                            cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                           (d_id, cur_u['did'], cur_u['fullname'], f"Tôi chấp nhận hạ giá chào bán xuống ${step_price:,.1f}/tấn để tiếp tục đàm phán.", now_m))
-                        else:
+                        if is_buyer:
                             cursor.execute("UPDATE deals SET buyer_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?",
-                                           (step_price, step_price, d_id))
+                                           (counter_p, counter_p, d_id))
                             cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                           (d_id, cur_u['did'], cur_u['fullname'], f"Tôi nâng mức giá mua lên ${step_price:,.1f}/tấn để thể hiện thiện chí hợp tác.", now_m))
+                                           (d_id, cur_u['did'], cur_u['fullname'], f"Mức giá cũ quá cao, tôi đề xuất trả mức giá mới là ${counter_p:,.1f}/tấn.", now_m))
+                        else:
+                            cursor.execute("UPDATE deals SET seller_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?",
+                                           (counter_p, counter_p, d_id))
+                            cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                           (d_id, cur_u['did'], cur_u['fullname'], f"Tôi chấp nhận hạ giá chào bán xuống ${counter_p:,.1f}/tấn để tìm kiếm tiếng nói chung.", now_m))
                         conn.commit()
                         st.rerun()
 
-                # OFFER 2: DỪNG VÀ KẾT THÚC GIAO DỊCH
+                # PHƯƠNG ÁN 2: CHỜ ĐỐI PHƯƠNG CẬP NHẬT GIÁ MỚI
                 with c_opt2:
-                    st.markdown("##### Phương án 2: Dừng đàm phán")
+                    st.markdown("##### 2. Giữ nguyên vị thế & Chờ đợi")
+                    if is_buyer:
+                        wait_guide = "Từ chối và yêu cầu Bên Bán phải là người chủ động giảm giá xuống."
+                        wait_msg = "Tôi từ chối mức giá này. Đề nghị Bên Bán cân nhắc đưa ra mức giá chào tốt hơn."
+                    else:
+                        wait_guide = "Từ chối và yêu cầu Bên Mua phải nâng mức trả giá lên nếu muốn mua."
+                        wait_msg = "Mức giá này quá thấp, đề nghị Bên Mua nâng ngân sách nếu thực sự muốn lấy lô hàng."
+                        
+                    st.caption(wait_guide)
+                    if st.button("⏳ Yêu cầu đối tác ra giá lại", key=f"btn_wait_partner_{d_id}"):
+                        now_m = datetime.datetime.now().strftime("%H:%M")
+                        cursor.execute("UPDATE deals SET status = 'NEGOTIATING', seller_signed = 0, buyer_signed = 0 WHERE id = ?", (d_id,))
+                        cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                       (d_id, cur_u['did'], cur_u['fullname'], wait_msg, now_m))
+                        conn.commit()
+                        st.rerun()
+
+                # PHƯƠNG ÁN 3: DỪNG VÀ KẾT THÚC GIAO DỊCH
+                with c_opt3:
+                    st.markdown("##### 3. Dừng đàm phán hoàn toàn")
                     st.caption("Đóng giao dịch vĩnh viễn và gửi thông báo xác nhận kết thúc vào phòng chat.")
-                    if st.button("🛑 Kết thúc giao dịch & Thông báo đối tác", key=f"btn_terminate_{d_id}"):
+                    if st.button("🛑 Đóng giao dịch", key=f"btn_terminate_{d_id}"):
                         now_m = datetime.datetime.now().strftime("%H:%M")
                         cursor.execute("UPDATE deals SET status = 'TERMINATED', seller_signed = 0, buyer_signed = 0 WHERE id = ?", (d_id,))
                         cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
