@@ -1,243 +1,157 @@
 import streamlit as st
 import pandas as pd
-import time
+import datetime
 
-# Thiết lập trang
-st.set_page_config(
-    page_title="TrustGate AI | TideCloak Secure Negotiation",
-    page_icon="🛡️",
-    layout="wide"
-)
+st.set_page_config(page_title="TrustGate AI - Smart Trading", layout="wide", page_icon="🌾")
 
-# Tùy biến CSS để giao diện trực quan và chuyên nghiệp hơn
-st.markdown("""
-<style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px;
-        border: 1px solid #e9ecef;
-        text-align: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    .badge-locked {
-        background-color: #ffe3e3;
-        color: #c92a2a;
-        padding: 6px 12px;
-        border-radius: 20px;
-        font-weight: 600;
-        display: inline-block;
-    }
-    .badge-granted {
-        background-color: #d3f9d8;
-        color: #2b8a3e;
-        padding: 6px 12px;
-        border-radius: 20px;
-        font-weight: 600;
-        display: inline-block;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 48px;
-        border-radius: 8px 8px 0px 0px;
-        font-weight: 600;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Khởi tạo dữ liệu mẫu cho Market Pool
+if "market_items" not in st.session_state:
+    st.session_state.market_items = [
+        {"id": "LST-01", "type": "BÁN", "owner": "Nông sản Lâm Viên (VN)", "product": "Cà phê Robusta S16", "quantity": "60 tấn", "price": 2150, "location": "Đức Trọng, VN"},
+        {"id": "DMD-01", "type": "MUA", "owner": "Mekong Fresh (KH)", "product": "Cà phê Robusta S16", "quantity": "20 tấn", "price": 2000, "location": "Phnom Penh, KH"},
+        {"id": "LST-02", "type": "BÁN", "owner": "Hồ tiêu Chư Sê (VN)", "product": "Hồ tiêu đen 500g/l", "quantity": "12 tấn", "price": 4200, "location": "Gia Lai, VN"}
+    ]
 
-# Khởi tạo trạng thái phiên làm việc
-if "seller_approved" not in st.session_state:
-    st.session_state.seller_approved = False
-if "buyer_approved" not in st.session_state:
-    st.session_state.buyer_approved = False
-if "ai_analyzed" not in st.session_state:
-    st.session_state.ai_analyzed = False
+# Trạng thái đàm phán
+if "negotiation" not in st.session_state:
+    st.session_state.negotiation = {
+        "active": True,
+        "seller_price": 2150,
+        "buyer_price": 2000,
+        "ai_suggested_price": None,
+        "final_price": None,
+        "seller_signed": False,
+        "buyer_signed": False
+    }
 
-# Header chính
-st.title("🛡️ TrustGate AI — Decentralized Smart Negotiation")
-st.markdown("**Kiến trúc không quyền kiểm soát đơn phương (No Unilateral Control)** được bảo vệ bởi **TideCloak**[cite: 1, 7]")
-st.divider()
+st.title("🌾 TrustGate AI — Sàn Thương Lượng Nông Sản Đa Bên")
+st.caption("Bảo vệ dữ liệu bí mật & Ngăn chặn quyền kiểm soát đơn phương bằng TideCloak")
 
-# Chia 3 Tab tương ứng với vai trò
-tab1, tab2, tab3 = st.tabs([
-    "🌾 Bên Bán (Seller - Việt Nam)", 
-    "🛒 Bên Mua (Buyer - Campuchia)", 
-    "🤝 Phòng Giao Dịch & Cổng Bảo Mật (Tide Gate)"
+tab_market, tab_deal, tab_security = st.tabs([
+    "🛒 Sàn Thị Trường Chung (Pool)", 
+    "💬 Phòng Thương Lượng Giá & AI", 
+    "🛡️ Cổng Bảo Mật TideCloak"
 ])
 
-# ==========================================
-# TAB 1: SELLER
-# ==========================================
-with tab1:
-    st.subheader("Bên Bán: Doanh nghiệp Nông sản Việt Nam[cite: 7]")
-    col_s1, col_s2 = st.columns([1, 1])
-    
-    with col_s1:
-        st.markdown("#### 🔒 Két Dữ Liệu Riêng Tư (Seller Vault)")
-        st.caption("Chỉ giải mã được bằng Private Key của Người Bán; Admin/AI không thể đọc[cite: 1, 7]")
-        st.error("""
-        * **Giá vốn cơ bản:** $2,600 / tấn
-        * **Tồn kho sẵn có:** 100 tấn
-        * **Biên lợi nhuận tối thiểu:** 12%
-        """)
+# ========================================================
+# TAB 1: SÀN THỊ TRƯỜNG CHUNG (MARKETPLACE POOL)
+# ========================================================
+with tab_market:
+    st.subheader("1. Đăng tin lên sàn thị trường chung")
+    with st.expander("➕ Đăng nhu cầu BÁN hoặc MUA mới", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        post_type = c1.selectbox("Loại tin", ["BÁN (Seller VN)", "MUA (Buyer KH)"])
+        product_name = c2.text_input("Tên nông sản", "Cà phê Robusta S18")
+        qty = c3.text_input("Khối lượng / Đơn vị", "25 tấn")
+        price = c4.number_input("Mức giá mong muốn (USD/tấn)", min_value=100, value=2100)
         
-    with col_s2:
-        st.markdown("#### 📄 Dữ Liệu Đề Xuất Chia Sẻ (Shared Manifest)[cite: 7]")
-        st.caption("Dữ liệu chỉ được công khai khi hai bên cùng đồng thuận phê duyệt[cite: 7]")
-        st.info("""
-        * **Mặt hàng:** Cà phê Robusta Grade 1 (Đắk Lắk)
-        * **Mức giá chào bán:** $2,950 / tấn
-        * **Quy cách đóng gói:** Bao đay 60kg tiêu chuẩn xuất khẩu
-        """)
-
-    st.markdown("---")
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        if not st.session_state.seller_approved:
-            if st.button("✍️ Ký Duyệt Bằng TideCloak", key="btn_s_sign", type="primary"):
-                st.session_state.seller_approved = True
-                st.rerun()
-        else:
-            st.success("✅ Đã ký xác thực qua TideCloak[cite: 7]")
-            if st.button("Thu hồi phê duyệt (Revoke)", key="btn_s_rev"):
-                st.session_state.seller_approved = False
-                st.session_state.ai_analyzed = False
-                st.rerun()
-
-# ==========================================
-# TAB 2: BUYER
-# ==========================================
-with tab2:
-    st.subheader("Bên Mua: Doanh nghiệp Nhập khẩu Campuchia[cite: 7]")
-    col_b1, col_b2 = st.columns([1, 1])
-    
-    with col_b1:
-        st.markdown("#### 🔒 Két Dữ Liệu Riêng Tư (Buyer Vault)")
-        st.caption("Chỉ giải mã được bằng Private Key của Người Mua; Admin/AI không thể đọc[cite: 1, 7]")
-        st.error("""
-        * **Ngân sách mua tối đa:** $2,900 / tấn
-        * **Chi phí vốn tài trợ:** $60,000
-        * **Thời hạn thanh toán mong muốn:** L/C 30 ngày
-        """)
-        
-    with col_b2:
-        st.markdown("#### 📄 Dữ Liệu Đề Xuất Chia Sẻ (Shared Manifest)[cite: 7]")
-        st.caption("Dữ liệu chỉ được công khai khi hai bên cùng đồng thuận phê duyệt[cite: 7]")
-        st.info("""
-        * **Khối lượng cần mua:** 20 tấn
-        * **Địa điểm nhận hàng:** Cửa khẩu Mộc Bài - Bavet
-        * **Thời gian giao hàng:** Trước ngày 15/11/2026
-        """)
-
-    st.markdown("---")
-    cb1, cb2 = st.columns([1, 3])
-    with cb1:
-        if not st.session_state.buyer_approved:
-            if st.button("✍️ Ký Duyệt Bằng TideCloak", key="btn_b_sign", type="primary"):
-                st.session_state.buyer_approved = True
-                st.rerun()
-        else:
-            st.success("✅ Đã ký xác thực qua TideCloak[cite: 7]")
-            if st.button("Thu hồi phê duyệt (Revoke)", key="btn_b_rev"):
-                st.session_state.buyer_approved = False
-                st.session_state.ai_analyzed = False
-                st.rerun()
-
-# ==========================================
-# TAB 3: DEAL ROOM & SECURITY GATE
-# ==========================================
-with tab3:
-    st.subheader("Cổng Kiểm Soát Đồng Thuận Đa Bên (Tide Multi-Party Consensus Gate)[cite: 1, 7]")
-    
-    # Hiển thị trực quan 2 thẻ trạng thái chữ ký
-    col_gate1, col_gate2, col_gate3 = st.columns(3)
-    with col_gate1:
-        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.markdown("**Chữ ký Bên Bán (Seller)**")
-        if st.session_state.seller_approved:
-            st.markdown("<span class='badge-granted'>ĐÃ XÁC THỰC</span>", unsafe_allow_html=True)
-        else:
-            st.markdown("<span class='badge-locked'>CHƯA KÝ</span>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-        
-    with col_gate2:
-        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.markdown("**Chữ ký Bên Mua (Buyer)**")
-        if st.session_state.buyer_approved:
-            st.markdown("<span class='badge-granted'>ĐÃ XÁC THỰC</span>", unsafe_allow_html=True)
-        else:
-            st.markdown("<span class='badge-locked'>CHƯA KÝ</span>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    both_signed = st.session_state.seller_approved and st.session_state.buyer_approved
-
-    with col_gate3:
-        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.markdown("**Trạng Thái Token Truy Cập AI**")
-        if both_signed:
-            st.markdown("<span class='badge-granted'>GRANTED (TTL: 30m)</span>", unsafe_allow_html=True)
-        else:
-            st.markdown("<span class='badge-locked'>BLOCKED (BỊ KHÓA)</span>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    
-    # Khu vực chạy AI
-    if not both_signed:
-        st.warning("⚠️ **HỆ THỐNG ĐANG BỊ KHÓA (FAIL-CLOSED)**: Để ngăn chặn truy cập dữ liệu đơn phương, AI chỉ được cấp quyền giải mã khi có đủ 2 chữ ký xác thực số từ cả hai bên[cite: 1, 7].")
-        st.button("🤖 Chạy AI Joint Analysis (Đang bị vô hiệu)", disabled=True)
-    else:
-        st.success("🟢 **ĐỦ ĐIỀU KIỆN ĐỒNG THUẬN**: TideCloak đã cấp token ủy quyền giới hạn (Ephemeral Token) cho phiên phân tích chung này[cite: 1, 7].")
-        if st.button("🤖 Kích Hoạt AI Joint Analysis", type="primary"):
-            with st.spinner("AI đang phân tích dữ liệu đàm phán hợp nhất..."):
-                time.sleep(1.2)
-                st.session_state.ai_analyzed = True
-
-    # Kết quả báo cáo AI
-    if st.session_state.ai_analyzed and both_signed:
-        st.markdown("### 📊 Kết Quả Đàm Phán Tự Động (AI Joint Report)[cite: 7]")
-        
-        c_res1, c_res2 = st.columns([2, 1])
-        with c_res1:
-            report_df = pd.DataFrame({
-                "Chỉ Số Đàm Phán": [
-                    "Chênh lệch giá ban đầu",
-                    "Khối lượng thương lượng",
-                    "Chi phí logistics dự kiến",
-                    "Mức giá AI khuyến nghị chốt",
-                    "Lợi ích kinh tế hai bên"
-                ],
-                "Giá Trị / Đánh Giá": [
-                    "Seller ($2,950) cao hơn Buyer ($2,900) $50/tấn",
-                    "20 tấn",
-                    "$32 / tấn (vận chuyển đường bộ)",
-                    "$2,925 / tấn",
-                    "Cả hai bên cùng đạt mục tiêu biên lợi nhuận"
-                ]
+        if st.button("Đăng tin lên thị trường"):
+            role_owner = "Lâm Viên (VN)" if "BÁN" in post_type else "Mekong Trading (KH)"
+            st.session_state.market_items.append({
+                "id": f"ITEM-{len(st.session_state.market_items)+1}",
+                "type": "BÁN" if "BÁN" in post_type else "MUA",
+                "owner": role_owner,
+                "product": product_name,
+                "quantity": qty,
+                "price": price,
+                "location": "Việt Nam / Campuchia"
             })
-            st.dataframe(report_df, use_container_width=True, hide_index=True)
-        with c_res2:
-            st.info("""
-            **Bảo đảm an toàn từ TideCloak:**
-            - AI chỉ truy cập dữ liệu dùng chung[cite: 7].
-            - Không lưu trữ prompt hay lịch sử vào bộ nhớ chung[cite: 7].
-            - Quyền đọc tự động hết hiệu lực sau khi xuất báo cáo[cite: 7].
-            """)
+            st.success("Đã đăng tin thành công vào Pool thị trường chung!")
+            st.rerun()
 
-    st.divider()
+    st.subheader("2. Danh sách hàng hóa trên thị trường")
+    df_market = pd.DataFrame(st.session_state.market_items)
+    st.dataframe(df_market, use_container_width=True, hide_index=True)
     
-    # 2 Thử nghiệm bảo mật cho kịch bản Video Demo
-    st.subheader("🧪 Kiểm Thử Bảo Mật Cho Video Demo[cite: 6, 7]")
+    st.info("💡 Tìm thấy mặt hàng phù hợp? Nhấn sang **Phòng Thương Lượng** để bắt đầu đàm phán mức giá.")
+
+# ========================================================
+# TAB 2: PHÒNG THƯƠNG LƯỢNG GIÁ & AI COPILOT
+# ========================================================
+with tab_deal:
+    st.subheader("Phòng Thương Lượng Giá: Nông sản Lâm Viên (VN) ↔ Mekong Fresh (KH)")
+    
+    col_room1, col_room2 = st.columns([1, 1])
+    
+    with col_room1:
+        st.markdown("#### ⚖️ Trạng Thái Trả Giá Của Hai Bên")
+        st.write(f"🏷️ **Giá Người bán chào ban đầu:** `${st.session_state.negotiation['seller_price']} / tấn`")
+        st.write(f"🏷️ **Giá Người mua đề nghị mua:** `${st.session_state.negotiation['buyer_price']} / tấn`")
+        
+        diff = st.session_state.negotiation['seller_price'] - st.session_state.negotiation['buyer_price']
+        st.warning(f"Chênh lệch hiện tại: **${diff} / tấn**. Người mua từ chối mức giá của Người bán.")
+        
+        st.markdown("---")
+        st.markdown("#### 🤖 AI Trợ Lý Thương Lượng (Negotiation Copilot)")
+        st.caption("AI chỉ đọc dữ liệu giá công khai và chi phí vận chuyển; không truy cập kho giá vốn bí mật.")
+        
+        if st.button("Kích hoạt AI tính toán mức giá cân bằng tối ưu"):
+            # Thuật toán tính giá khuyến nghị dựa trên biên độ và cước phí vận tải
+            shipping_cost = 35 # USD/tấn
+            optimal = (st.session_state.negotiation['seller_price'] + st.session_state.negotiation['buyer_price']) / 2 + (shipping_cost / 2)
+            st.session_state.negotiation['ai_suggested_price'] = round(optimal, 1)
+            st.session_state.negotiation['final_price'] = st.session_state.negotiation['ai_suggested_price']
+            st.rerun()
+            
+        if st.session_state.negotiation['ai_suggested_price']:
+            st.success(f"🎯 **AI Đề Xuất:** Nên chốt ở mức **${st.session_state.negotiation['ai_suggested_price']} / tấn**")
+            st.write("*Lý do:* Mức giá này bù đắp 50% phí vận chuyển Mộc Bài - Phnom Penh và đảm bảo biên lợi nhuận cho cả hai bên.")
+
+    with col_room2:
+        st.markdown("#### ✍️ Phê Duyệt Chốt Thỏa Thuận (TideCloak Dual-Consensus)")
+        st.caption("Nguyên tắc Không Kiểm Soát Đơn Phương: Hợp đồng chỉ chốt khi cả hai bên cùng ký số.")
+        
+        price_to_close = st.session_state.negotiation['final_price'] if st.session_state.negotiation['final_price'] else st.session_state.negotiation['seller_price']
+        st.metric("Giá Chốt Hợp Đồng Dự Kiến", f"${price_to_close} / tấn")
+        
+        col_s_btn, col_b_btn = st.columns(2)
+        with col_s_btn:
+            if not st.session_state.negotiation['seller_signed']:
+                if st.button("✍️ Người Bán Ký Chấp Thuận"):
+                    st.session_state.negotiation['seller_signed'] = True
+                    st.rerun()
+            else:
+                st.success("✅ Người bán đã ký")
+                
+        with col_b_btn:
+            if not st.session_state.negotiation['buyer_signed']:
+                if st.button("✍️ Người Mua Ký Chấp Thuận"):
+                    st.session_state.negotiation['buyer_signed'] = True
+                    st.rerun()
+            else:
+                st.success("✅ Người mua đã ký")
+                
+        # Kiểm tra điều kiện đồng thuận 2 bên
+        if st.session_state.negotiation['seller_signed'] and st.session_state.negotiation['buyer_signed']:
+            st.balloons()
+            st.success("🎉 **GIAO DỊCH ĐÃ ĐƯỢC CHỐT THÀNH CÔNG BẰNG TIDECLOAK!**")
+            st.write("Hai bên đã đạt được đồng thuận số. Hợp đồng mua bán 20 tấn Robusta chính thức có hiệu lực.")
+        else:
+            st.warning("⏳ Trạng thái: **ĐANG CHỜ ĐỒNG THUẬN CẢ 2 BÊN**. Không một bên nào hoặc Admin có thể tự ý đóng giao dịch.")
+
+# ========================================================
+# TAB 3: BẢO MẬT & KIỂM TOÁN TIDECLOAK
+# ========================================================
+with tab_security:
+    st.subheader("Cổng Giám Sát Phân Quyền & Bảo Mật (Tide Security Gate)")
+    
+    st.markdown("#### 1. Kiểm thử chống can thiệp đơn phương (Security Test)")
     col_t1, col_t2 = st.columns(2)
     with col_t1:
-        if st.button("🚨 Thử Admin Bypass (Quản trị viên can thiệp đơn phương)"):
-            st.error("❌ **ACCESS DENIED (TideCloak Enforcement)**: Quản trị viên nền tảng không nắm giữ Private Key của các bên, mọi nỗ lực trích xuất dữ liệu đều bị chặn đứng[cite: 1, 7]!")
+        if st.button("🚨 Thử Admin Bypass (Cố tình chốt đơn mà không có 2 chữ ký)"):
+            st.error("❌ **BỊ TỪ CHỐI BỞI TIDECLOAK:** Vi phạm chính sách No Unilateral Control! Admin không có khóa ký của người dùng.")
     with col_t2:
-        if st.button("🛑 Thu Hồi Quyền Lập Tức (Emergency Revoke)"):
-            st.session_state.seller_approved = False
-            st.session_state.buyer_approved = False
-            st.session_state.ai_analyzed = False
-            st.warning("🔒 **ĐÃ THU HỒI**: Toàn bộ quyền truy cập của AI đã bị hủy bỏ ngay lập tức[cite: 7].")
+        if st.button("🛑 Thu hồi thỏa thuận (Emergency Revoke)"):
+            st.session_state.negotiation['seller_signed'] = False
+            st.session_state.negotiation['buyer_signed'] = False
+            st.warning("🔒 Toàn bộ thỏa thuận và quyền truy cập tạm thời của AI đã bị thu hồi.")
             st.rerun()
+            
+    st.markdown("---")
+    st.markdown("#### 2. Nhật ký truy cập minh bạch (Audit Trail)")
+    audit_data = [
+        {"Thời gian": str(datetime.datetime.now().strftime("%H:%M:%S")), "Tác nhân": "Seller Lâm Viên", "Hành động": "Đăng tải listing LST-01", "Kết quả": "Công khai"},
+        {"Thời gian": str(datetime.datetime.now().strftime("%H:%M:%S")), "Tác nhân": "Buyer Mekong Fresh", "Hành động": "Đề xuất giá $2000", "Kết quả": "Chờ thương lượng"},
+        {"Thời gian": str(datetime.datetime.now().strftime("%H:%M:%S")), "Tác nhân": "Tide Consensus Gate", "Hành động": "Kiểm tra chữ ký 2 bên", "Kết quả": "Đang thực thi"}
+    ]
+    st.table(pd.DataFrame(audit_data))
