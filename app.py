@@ -3,6 +3,9 @@ import sqlite3
 import pandas as pd
 import datetime
 import hashlib
+import json
+from google import genai
+from google.genai import types
 
 # Cấu hình trang hiển thị
 st.set_page_config(
@@ -35,11 +38,6 @@ st.markdown("""
         margin-bottom: 8px;
         max-width: 80%;
         margin-left: auto;
-    }
-    .role-card {
-        border-radius: 8px;
-        padding: 14px;
-        margin-bottom: 15px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -146,11 +144,67 @@ if "active_nav" not in st.session_state:
     st.session_state.active_nav = "🛒 1. Sàn Thị Trường Chung (Pool)"
 
 # ==========================================
-# 2. XÁC THỰC DANH TÍNH TIDECLOAK
+# 2. HÀM GỌI GEMINI AI PHÂN TÍCH GIÁ THẬT
+# ==========================================
+def analyze_fair_price_with_ai(product, quantity, seller_price, buyer_price, chat_history, api_key):
+    """
+    Hàm gọi Gemini LLM thực thụ để đóng vai trò AI Copilot trung gian hòa giải giá.
+    """
+    if not api_key:
+        shipping = 35.0
+        fallback_price = round((seller_price + buyer_price) / 2.0 + (shipping / 2.0), 1)
+        return {
+            "suggested_price": fallback_price,
+            "reasoning": "Chưa nhập API Key. Hệ thống tạm tính trung gian dựa trên biên độ chênh lệch và cước vận chuyển $35/tấn.",
+            "risks": "Nhập API Key ở sidebar để bật suy luận thời gian thực từ Gemini."
+        }
+    
+    prompt = f"""
+    Bạn là Trợ lý AI trung gian thương mại nông sản độc lập (TrustGate AI Copilot) giữa Việt Nam và Campuchia.
+    Nhiệm vụ: Phân tích bối cảnh đàm phán và đề xuất mức giá cân bằng hợp lý (Fair Price) cho cả hai bên.
+    
+    DỮ LIỆU ĐÀM PHÁN:
+    - Mặt hàng: {product}
+    - Khối lượng: {quantity}
+    - Giá Bên Bán (Việt Nam) chào: {seller_price} USD/tấn
+    - Giá Bên Mua (Campuchia) đề xuất: {buyer_price} USD/tấn
+    - Lịch sử thương lượng tại phòng chat:
+    {chat_history}
+    
+    NGUYÊN TẮC:
+    1. Cân nhắc cước vận chuyển đường bộ qua cửa khẩu Mộc Bài/Bavet (khoảng 30 - 45 USD/tấn).
+    2. Đưa ra mức giá khả thi nằm giữa mức của hai bên, không vượt quá khả năng chi trả.
+    3. Phản hồi định dạng JSON thuần túy (không dùng markdown code block):
+    {{
+        "suggested_price": <giá_dạng_số_thực>,
+        "reasoning": "<phân_tích_ngắn_gọn_lý_do_chốt_mức_giá_này>"
+    }}
+    """
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2
+            )
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        shipping = 35.0
+        fallback_price = round((seller_price + buyer_price) / 2.0 + (shipping / 2.0), 1)
+        return {
+            "suggested_price": fallback_price,
+            "reasoning": f"Lỗi gọi LLM ({str(e)}). Tạm thời áp dụng công thức cân bằng số học."
+        }
+
+# ==========================================
+# 3. XÁC THỰC DANH TÍNH TIDECLOAK
 # ==========================================
 if st.session_state.auth_user is None:
     st.title("🛡️ TrustGate AI — Cổng Xác Thực TideCloak")
-    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp.")
+    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp[cite: 1, 7].")
     
     t1, t2 = st.tabs(["🔐 Đăng Nhập Bằng TideCloak DID", "📝 Cấp Mới Danh Tính Doanh Nghiệp"])
     
@@ -188,7 +242,7 @@ if st.session_state.auth_user is None:
     with t2:
         st.subheader("Khởi tạo danh tính phân tán mới")
         with st.form("form_tide_reg"):
-            r_name = st.text_input("Họ và tên người đại diện ký duyệt")
+            r_name = st.text_input("Họ và tên người đại diện ký duyệt")[cite: 11]
             r_org = st.text_input("Tên doanh nghiệp / Hợp tác xã")
             r_role = st.selectbox("Vai trò giao dịch", ["Bên Bán (Việt Nam)", "Bên Mua (Campuchia)"])
             btn_reg = st.form_submit_button("Cấp Phát Mã Tide DID Mới")
@@ -213,7 +267,7 @@ if st.session_state.auth_user is None:
     st.stop()
 
 # ==========================================
-# 3. GIAO DIỆN CHÍNH SAU KHI ĐĂNG NHẬP
+# 4. GIAO DIỆN CHÍNH SAU KHI ĐĂNG NHẬP
 # ==========================================
 cur_u = st.session_state.auth_user
 
@@ -224,8 +278,20 @@ with st.sidebar:
     st.markdown(f"**Vai trò:** {cur_u['role']}")
     st.markdown(f"**Quốc gia:** {cur_u['country']}")
     st.code(f"{cur_u['did']}", language="text")
-    st.caption("Trạng thái: ĐÃ XÁC THỰC PHÂN TÁN")
+    st.caption("Trạng thái: ĐÃ XÁC THỰC PHÂN TÁN[cite: 7]")
     
+    st.divider()
+    st.markdown("### 🔑 Cấu Hình AI Copilot")
+    # Tự động đọc từ secrets nếu có, hoặc cho phép nhập tay trực tiếp
+    default_key = st.secrets.get("GEMINI_API_KEY", "")
+    input_api_key = st.text_input("Gemini API Key:", value=default_key, type="password", help="Dán mã API Key bắt đầu bằng AIzaSy... vào đây.")
+    active_api_key = input_api_key.strip() if input_api_key.strip() else default_key
+    
+    if active_api_key:
+        st.success("Đã nạp Gemini API Key!")
+    else:
+        st.warning("Chưa có API Key (Sẽ chạy ở chế độ tính toán fallback).")
+        
     st.divider()
     if st.button("🚪 Đăng Xuất"):
         st.session_state.auth_user = None
@@ -233,9 +299,8 @@ with st.sidebar:
         st.rerun()
 
 st.title("🌾 TrustGate AI — Sàn Thương Lượng Nông Sản Đa Bên")
-st.markdown("**Kiến trúc không quyền kiểm soát đơn phương (No Unilateral Control)** — Được bảo vệ bởi **TideCloak**.")
+st.markdown("**Kiến trúc không quyền kiểm soát đơn phương (No Unilateral Control)** — Được bảo vệ bởi **TideCloak**[cite: 1, 7].")
 
-# THANH ĐIỀU HƯỚNG TỰ ĐỘNG CHUYỂN TAB ĐỘNG
 nav_options = [
     "🛒 1. Sàn Thị Trường Chung (Pool)", 
     "💬 2. Phòng Thương Lượng & Chat", 
@@ -324,7 +389,6 @@ if st.session_state.active_nav == "🛒 1. Sàn Thị Trường Chung (Pool)":
                         
                         conn.commit()
                         st.session_state.current_deal_id = new_deal_id
-                        # TỰ ĐỘNG CHUYỂN SANG TAB 2
                         st.session_state.active_nav = "💬 2. Phòng Thương Lượng & Chat"
                         st.rerun()
                 else:
@@ -386,11 +450,13 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
                     m_did, m_name, m_text, m_time = msg
                     if m_did == d_s_did:
                         st.markdown(f"<div class='chat-bubble-seller'><b>[Bên Bán] {m_name}:</b> {m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
+                    elif m_did == "did:tide:ai_copilot":
+                        st.markdown(f"<div style='background-color:#fff3cd; padding:10px; border-radius:10px; margin-bottom:8px;'><b>🤖 {m_name}:</b> {m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
                     else:
                         st.markdown(f"<div class='chat-bubble-buyer'><b>[Bên Mua] {m_name}:</b> {m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
             
             with st.form(f"form_send_msg_{d_id}", clear_on_submit=True):
-                new_msg_text = st.text_input("Nhập tin nhắn trao đổi...", placeholder="Ví dụ: Mức giá này đã gồm phí vận chuyển chưa?")
+                new_msg_text = st.text_input("Nhập tin nhắn trao đổi...", placeholder="Ví dụ: Mức giá này đã gồm phí bốc xếp chưa?")
                 if st.form_submit_button("Gửi Tin Nhắn"):
                     if new_msg_text.strip():
                         now_m = datetime.datetime.now().strftime("%H:%M")
@@ -439,26 +505,41 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
 
             st.divider()
             
-            st.markdown("#### Trợ Lý AI Điều Phối Giá Cân Bằng")
-            st.caption("AI hoạt động trong vùng cách ly, tính toán chi phí vận chuyển ($35/tấn) để đề xuất mức giá tối ưu khi 2 bên bế tắc.")
+            st.markdown("#### Trợ Lý AI Điều Phối Giá Cân Bằng (Gemini Copilot)")
+            st.caption("AI hoạt động trong vùng cách ly, phân tích lịch sử chat và dữ liệu giá để gợi ý hòa giải[cite: 7, 11].")
             
             if st.button("🤖 Nhờ AI Đề Xuất Giá Hòa Giải", key=f"btn_ai_{d_id}"):
                 if d_s_pr > 0 and d_b_pr > 0:
-                    shipping = 35.0
-                    calc_optimal = round((d_s_pr + d_b_pr) / 2.0 + (shipping / 2.0), 1)
-                    cursor.execute("UPDATE deals SET ai_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0 WHERE id = ?",
-                                   (calc_optimal, calc_optimal, d_id))
-                    
-                    now_m = datetime.datetime.now().strftime("%H:%M")
-                    cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                   (d_id, "did:tide:ai_copilot", "AI Copilot", f"Đã tính toán: Mức giá cân bằng tối ưu là ${calc_optimal:,.1f}/tấn.", now_m))
-                    conn.commit()
-                    st.rerun()
+                    with st.spinner("Gemini đang phân tích ngữ cảnh đàm phán..."):
+                        cursor.execute("SELECT sender_name, message FROM deal_messages WHERE deal_id = ? ORDER BY id ASC", (d_id,))
+                        msgs = cursor.fetchall()
+                        chat_ctx = "\n".join([f"- {m[0]}: {m[1]}" for m in msgs]) if msgs else "Chưa có thêm ghi chú."
+                        
+                        ai_res = analyze_fair_price_with_ai(
+                            product=d_prod,
+                            quantity=d_qty,
+                            seller_price=d_s_pr,
+                            buyer_price=d_b_pr,
+                            chat_history=chat_ctx,
+                            api_key=active_api_key
+                        )
+                        
+                        calc_optimal = float(ai_res.get("suggested_price", (d_s_pr + d_b_pr)/2))
+                        ai_reason = ai_res.get("reasoning", "Mức giá tối ưu cho hai bên.")
+                        
+                        cursor.execute("UPDATE deals SET ai_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0 WHERE id = ?",
+                                       (calc_optimal, calc_optimal, d_id))
+                        
+                        now_m = datetime.datetime.now().strftime("%H:%M")
+                        cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                       (d_id, "did:tide:ai_copilot", "TrustGate AI Copilot", f"Phân tích hoàn tất: Khuyến nghị mức ${calc_optimal:,.1f}/tấn. {ai_reason}", now_m))
+                        conn.commit()
+                        st.rerun()
                 else:
                     st.warning("Cả hai bên cần đưa ra mức giá ban đầu trước khi gọi AI.")
                     
             if d_ai_pr:
-                st.info(f"💡 **AI Khuyến Nghị Chốt:** **${d_ai_pr:,.1f}/tấn** (Hỗ trợ 50% chi phí vận chuyển).")
+                st.info(f"💡 **AI Khuyến Nghị Chốt:** **${d_ai_pr:,.1f}/tấn**.")
                 if st.button("Chấp Nhận Mức Giá Của AI", key=f"btn_acc_ai_{d_id}"):
                     cursor.execute("UPDATE deals SET final_price = ? WHERE id = ?", (d_ai_pr, d_id))
                     conn.commit()
@@ -467,7 +548,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
             st.divider()
             
             st.markdown("#### Phê Duyệt Đồng Thuận (Tide Dual-Consensus)")
-            st.caption("Hợp đồng chỉ có hiệu lực khi cả hai bên cùng ký xác nhận mức giá chốt.")
+            st.caption("Hợp đồng chỉ có hiệu lực khi cả hai bên cùng ký xác nhận mức giá chốt[cite: 1, 7].")
             
             target_close_p = d_fin_pr if d_fin_pr else d_s_pr
             st.metric("Mức Giá Dự Kiến Chốt", f"${target_close_p:,.1f} / tấn")
@@ -510,19 +591,18 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
             if d_s_sign == 1 and d_b_sign == 1:
                 st.balloons()
                 st.success(f"🎉 **GIAO DỊCH THÀNH CÔNG Ở MỨC GIÁ ${target_close_p:,.1f}/TẤN!**")
-                st.write("Hai bên đã hoàn tất xác thực số qua TideCloak. Hợp đồng mua bán đã được đóng băng.")
+                st.write("Hai bên đã hoàn tất xác thực số qua TideCloak[cite: 7]. Hợp đồng mua bán đã được đóng băng.")
             else:
                 st.error("🔒 **TRẠNG THÁI: CHƯA ĐỦ ĐỒNG THUẬN (FAIL-CLOSED)**")
-                st.caption("Chính sách TideCloak: Nếu thiếu chữ ký của một trong hai bên, hợp đồng hoàn toàn không thể thực thi.")
+                st.caption("Chính sách TideCloak: Nếu thiếu chữ ký của một trong hai bên, hợp đồng hoàn toàn không thể thực thi[cite: 1, 7, 11].")
 
 # ========================================================
 # TAB 3: TRUNG TÂM BẢO MẬT & KIỂM THỬ ĐA VAI TRÒ
 # ========================================================
 elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak":
     st.subheader("🛡️ Trung Tâm Giám Sát Phân Quyền & Kiểm Thử Bảo Mật TideCloak")
-    st.caption("Kiểm chứng cơ chế No Unilateral Control và tính toàn vẹn dưới các góc nhìn khác nhau.")
+    st.caption("Kiểm chứng cơ chế No Unilateral Control và tính toàn vẹn dưới các góc nhìn khác nhau[cite: 1, 7].")
     
-    # Bộ chọn góc nhìn kiểm thử
     perspective = st.radio(
         "Lựa chọn góc nhìn kiểm tra cơ chế bảo mật:",
         [
@@ -534,14 +614,13 @@ elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak
     )
     st.write("---")
     
-    # 1. GÓC NHÌN QUẢN TRỊ VIÊN
     if "Admin" in perspective:
         st.markdown("#### 👑 Góc nhìn Quản Trị Viên Nền Tảng (Platform Admin)")
         st.info("""
         **Quyền hạn thực tế của Admin:**
-        - Chỉ có thể giám sát trạng thái mạng, dung lượng giao dịch và siêu dữ liệu (metadata) vận hành.
-        - **Hoàn toàn KHÔNG sở hữu Khóa Riêng (Private Key)** của Người Bán hay Người Mua.
-        - Không thể tự ý ký thay, không thể giải mã kho dữ liệu bí mật và không thể cưỡng chế chốt hợp đồng.
+        - Chỉ có thể giám sát trạng thái mạng, dung lượng giao dịch và siêu dữ liệu (metadata) vận hành[cite: 11].
+        - **Hoàn toàn KHÔNG sở hữu Khóa Riêng (Private Key)** của Người Bán hay Người Mua[cite: 1, 7].
+        - Không thể tự ý ký thay, không thể giải mã kho dữ liệu bí mật và không thể cưỡng chế chốt hợp đồng[cite: 1, 7, 11].
         """)
         
         st.markdown("##### 🧪 Thử nghiệm tấn công / Can thiệp đơn phương:")
@@ -551,53 +630,50 @@ elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak
                 st.error("""
                 ❌ **ACCESS DENIED BY TIDECLOAK CORE:**
                 - Mã vi phạm: `ERR_NO_UNILATERAL_CONTROL_VIOLATION`
-                - Lý do: Yêu cầu thiếu chữ ký xác thực từ Private Key của doanh nghiệp tham gia.
-                - Kết luận: Quản trị viên không có quyền đơn phương can thiệp thỏa thuận!
+                - Lý do: Yêu cầu thiếu chữ ký xác thực từ Private Key của doanh nghiệp tham gia[cite: 1, 7].
+                - Kết luận: Quản trị viên không có quyền đơn phương can thiệp thỏa thuận[cite: 1, 7, 11]!
                 """)
         with c_ad2:
             if st.button("🔍 Admin Thử Đọc Trộm Giá Vốn Riêng Tư"):
-                st.error("❌ **DECRYPTION FAILED:** Payload đã được mã hóa phân tán. Không có ủy quyền đồng thuận từ cả hai bên.")
+                st.error("❌ **DECRYPTION FAILED:** Payload đã được mã hóa phân tán. Không có ủy quyền đồng thuận từ cả hai bên[cite: 7, 11].")
                 
-    # 2. GÓC NHÌN BÊN BÁN
     elif "Bên Bán" in perspective:
         st.markdown("#### 🌾 Góc nhìn Bên Bán (Seller - Việt Nam)")
         st.success("""
         **Quyền kiểm soát dữ liệu của Bên Bán:**
-        - Dữ liệu giá vốn và tồn kho nội bộ được lưu trong Két bí mật (Private Vault), chỉ chia sẻ trường đã duyệt.
-        - Có toàn quyền kích hoạt **Thu hồi khẩn cấp (Emergency Revoke)** để hủy bỏ đàm phán bất cứ lúc nào.
+        - Dữ liệu giá vốn và tồn kho nội bộ được lưu trong Két bí mật (Private Vault), chỉ chia sẻ trường đã duyệt[cite: 7, 11].
+        - Có toàn quyền kích hoạt **Thu hồi khẩn cấp (Emergency Revoke)** để hủy bỏ đàm phán bất cứ lúc nào[cite: 7, 11].
         """)
         
         st.markdown("##### ⚡ Quyền thu hồi chữ ký số:")
         if st.button("🛑 Thu Hồi Chữ Ký Bên Bán (Revoke Seller Signature)"):
             cursor.execute("UPDATE deals SET seller_signed = 0")
             conn.commit()
-            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN BÁN:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed).")
+            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN BÁN:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed)[cite: 7, 11].")
             st.rerun()
 
-    # 3. GÓC NHÌN BÊN MUA
     else:
         st.markdown("#### 🛒 Góc nhìn Bên Mua (Buyer - Campuchia)")
         st.success("""
         **Quyền kiểm soát dữ liệu của Bên Mua:**
-        - Ngân sách tối đa và hạn mức tín dụng được giữ kín hoàn toàn với Bên Bán và AI.
-        - Nếu Bên Bán tự ý sửa giá sau khi Bên Mua đã ký, hệ thống sẽ tự động hủy bỏ chữ ký cũ để bảo vệ Bên Mua.
+        - Ngân sách tối đa và hạn mức tín dụng được giữ kín hoàn toàn với Bên Bán và AI[cite: 7, 11].
+        - Nếu Bên Bán tự ý sửa giá sau khi Bên Mua đã ký, hệ thống sẽ tự động hủy bỏ chữ ký cũ để bảo vệ Bên Mua[cite: 7, 11].
         """)
         
         st.markdown("##### ⚡ Quyền thu hồi chữ ký số:")
         if st.button("🛑 Thu Hồi Chữ Ký Bên Mua (Revoke Buyer Signature)"):
             cursor.execute("UPDATE deals SET buyer_signed = 0")
             conn.commit()
-            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN MUA:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed).")
+            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN MUA:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed)[cite: 7, 11].")
             st.rerun()
 
     st.write("---")
-    # NHẬT KÝ KIỂM TOÁN CHUNG
     st.markdown("#### 📜 Nhật Ký Kiểm Toán Phân Tán (Tamper-evident Audit Trail)")
-    st.caption("Lịch sử xác thực danh tính và kiểm tra điều kiện đồng thuận theo thời gian thực:")
+    st.caption("Lịch sử xác thực danh tính và kiểm tra điều kiện đồng thuận theo thời gian thực[cite: 11]:")
     
     audit_data = [
         {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": cur_u['fullname'], "Hành động": f"Xác thực Tide DID ({cur_u['did']})", "Kết quả": "Hợp lệ"},
-        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "TideCloak Consensus Gate", "Hành động": "Kiểm tra ràng buộc Dual-Consensus", "Kết quả": "Enforced"},
-        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "Security Monitor", "Hành động": "Chặn nỗ lực can thiệp đơn phương", "Kết quả": "Bảo vệ thành công"}
+        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "TideCloak Consensus Gate", "Hành động": "Kiểm tra ràng buộc Dual-Consensus", "Kết quả": "Enforced[cite: 7]"},
+        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "Security Monitor", "Hành động": "Chặn nỗ lực can thiệp đơn phương", "Kết quả": "Bảo vệ thành công[cite: 1, 7]"}
     ]
     st.table(pd.DataFrame(audit_data))
