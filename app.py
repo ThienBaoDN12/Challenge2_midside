@@ -368,6 +368,10 @@ nav_options = [
     "🛡️ 3. Kiểm Tra Bảo Mật TideCloak"
 ]
 
+# Kiểm tra an toàn: nếu giá trị lưu từ trước không khớp, tự động reset về tab đầu tiên
+if "active_nav" not in st.session_state or st.session_state.active_nav not in nav_options:
+    st.session_state.active_nav = nav_options[0]
+
 selected_nav = st.radio(
     "Thanh điều hướng:",
     nav_options,
