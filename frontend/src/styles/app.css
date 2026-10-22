@@ -4533,11 +4533,8 @@ h2 {
 }
 
 .calculated-field small {
-  position: absolute;
-  right: 10px;
-  bottom: 14px;
   color: var(--secondary);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 400;
 }
 

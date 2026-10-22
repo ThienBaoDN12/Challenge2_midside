@@ -1,21 +1,93 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
+import { useApi } from "../hooks";
+import { fmtField, fmtNumber, fmtTime, fmtValue, initials } from "../format";
 import { PreviewField } from "./Seller";
-import { Icon, Button, Field, SelectField, Toggle } from "../shared";
-export function AddSharedInfoModal({ role, organization, onClose }) {
+import {
+  Icon,
+  Button,
+  Field,
+  SelectField,
+  Toggle,
+  ApiStatus,
+  ErrorNote,
+} from "../shared";
+
+export function AddSharedInfoModal({
+  room,
+  role,
+  organization,
+  onClose,
+  onShared,
+}) {
   const sellerManager = role === "Seller Manager";
+  const types = room.structured_types;
   const [mode, setMode] = useState(sellerManager ? "snapshot" : "structured");
   const [snapshotFields, setSnapshotFields] = useState([]);
-  const [category, setCategory] = useState("Delivery Schedule");
-  const [value, setValue] = useState("Delivery to Phnom Penh by Nov 28, 2026");
-  const [unit, setUnit] = useState("Date");
+  const [typeKey, setTypeKey] = useState("delivery_schedule");
+  const spec = types[typeKey];
+  const [value, setValue] = useState("2026-11-28");
+  const [unit, setUnit] = useState("");
   const [shared, setShared] = useState(false);
-  const toggleSnapshot = (field) => {
-    setSnapshotFields((fields) =>
-      fields.includes(field)
-        ? fields.filter((item) => item !== field)
-        : [...fields, field],
+  const [sharing, setSharing] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Seller Manager: private fields of the listing snapshot not yet public
+  const privateFields = useApi(async () => {
+    if (!sellerManager) return [];
+    const listing = await api.listing(room.listing.id);
+    if (!listing.snapshot_id) return [];
+    const snap = await api.snapshot(listing.snapshot_id);
+    return snap.fields.filter((f) => !listing.public_keys.includes(f.key));
+  }, [room.listing.id]);
+
+  const pickType = (key) => {
+    setTypeKey(key);
+    const t = types[key];
+    setValue(
+      t.type === "enum" ? t.options[0] : t.type === "date" ? "2026-11-28" : "",
     );
+    setUnit(t.units[0] ?? "");
   };
+  const toggleSnapshot = (key) =>
+    setSnapshotFields((fields) =>
+      fields.includes(key) ? fields.filter((k) => k !== key) : [...fields, key],
+    );
+
+  const share = async () => {
+    setSharing(true);
+    setError(null);
+    try {
+      if (mode === "snapshot") {
+        if (!snapshotFields.length) return;
+        for (const key of snapshotFields) {
+          // The modal itself is the extra confirmation for sensitive fields
+          await api.share(room.id, {
+            mode: "snapshot",
+            field_key: key,
+            confirm_sensitive: true,
+          });
+        }
+      } else {
+        await api.share(room.id, {
+          mode: "structured",
+          type_key: typeKey,
+          value,
+          unit: spec.units.length ? unit : null,
+        });
+      }
+      setShared(true);
+      onShared();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const labelOf = (key) =>
+    privateFields.data?.find((f) => f.key === key)?.label ?? key;
+
   return (
     <div className="shared-modal-layer" role="dialog" aria-modal="true">
       <button
@@ -27,7 +99,7 @@ export function AddSharedInfoModal({ role, organization, onClose }) {
       <section className="shared-modal">
         <div className="drawer-head">
           <div>
-            <p className="eyebrow">Room DR-0402</p>
+            <p className="eyebrow">Room {room.id}</p>
             <h2>Add Shared Information</h2>
           </div>
           <button type="button" onClick={onClose}>
@@ -75,24 +147,25 @@ export function AddSharedInfoModal({ role, organization, onClose }) {
                 <div className="modal-intro">
                   <h3>Reveal selected private fields in this room only.</h3>
                   <p>
-                    This does not change LST-VN-0161 or make these fields
+                    This does not change {room.listing.id} or make these fields
                     public.
                   </p>
                 </div>
-                {[
-                  ["Floor Price", "$3,850 / ton"],
-                  ["Cost Price", "$3,600 / ton"],
-                  ["Supplier Households", "124 households"],
-                ].map(([field, fieldValue]) => (
-                  <div className="snapshot-share-row" key={field}>
+                {(privateFields.data ?? []).map((f) => (
+                  <div className="snapshot-share-row" key={f.key}>
                     <span>
-                      <strong>{field}</strong>
-                      <small>{fieldValue} · Confidential · Encrypted</small>
+                      <strong>{f.label}</strong>
+                      <small>
+                        {fmtValue(f.value, f.unit)} ·{" "}
+                        {f.blocked
+                          ? "Blocked by policy"
+                          : "Confidential · Encrypted"}
+                      </small>
                     </span>
                     <Toggle
-                      checked={snapshotFields.includes(field)}
-                      label={`Share ${field} in room`}
-                      onChange={() => toggleSnapshot(field)}
+                      checked={snapshotFields.includes(f.key)}
+                      label={`Share ${f.label} in room`}
+                      onChange={() => toggleSnapshot(f.key)}
                     />
                   </div>
                 ))}
@@ -101,25 +174,40 @@ export function AddSharedInfoModal({ role, organization, onClose }) {
               <div className="structured-share">
                 <SelectField
                   label="Category"
-                  value={category}
-                  onChange={setCategory}
+                  value={typeKey}
+                  onChange={pickType}
                 >
-                  <option>Proposed Price</option>
-                  <option>Delivery Schedule</option>
-                  <option>Payment Terms</option>
-                  <option>Certification</option>
+                  {Object.entries(types).map(([key, t]) => (
+                    <option key={key} value={key}>
+                      {t.label}
+                    </option>
+                  ))}
                 </SelectField>
-                <Field label="Value" value={value} onChange={setValue} />
-                <SelectField
-                  label="Unit · Required"
-                  value={unit}
-                  onChange={setUnit}
-                >
-                  <option>Date</option>
-                  <option>USD / ton</option>
-                  <option>Days</option>
-                  <option>Document</option>
-                </SelectField>
+                {spec.type === "enum" ? (
+                  <SelectField label="Value" value={value} onChange={setValue}>
+                    {spec.options.map((o) => (
+                      <option key={o}>{o}</option>
+                    ))}
+                  </SelectField>
+                ) : (
+                  <Field
+                    label="Value"
+                    type={spec.type === "date" ? "date" : "text"}
+                    value={value}
+                    onChange={setValue}
+                  />
+                )}
+                {spec.units.length > 0 && (
+                  <SelectField
+                    label="Unit · Required"
+                    value={unit || spec.units[0]}
+                    onChange={setUnit}
+                  >
+                    {spec.units.map((u) => (
+                      <option key={u}>{u}</option>
+                    ))}
+                  </SelectField>
+                )}
               </div>
             )}
 
@@ -132,21 +220,17 @@ export function AddSharedInfoModal({ role, organization, onClose }) {
                 <strong>
                   {mode === "snapshot"
                     ? snapshotFields.length
-                      ? snapshotFields.join(", ")
+                      ? snapshotFields.map(labelOf).join(", ")
                       : "Select at least one private field"
-                    : `${category}: ${value} · ${unit}`}
+                    : `${spec.label}: ${fmtValue(value, spec.units.length ? unit || spec.units[0] : null)}`}
                 </strong>
                 <small>Shared in Room · by {organization}</small>
               </div>
             </div>
-            <Button
-              onClick={() => {
-                if (mode === "structured" || snapshotFields.length) {
-                  setShared(true);
-                }
-              }}
-            >
-              Share in Room <Icon name="arrow" size={16} />
+            <ErrorNote error={error} />
+            <Button disabled={sharing} onClick={share}>
+              {sharing ? "Sharing…" : "Share in Room"}{" "}
+              <Icon name="arrow" size={16} />
             </Button>
           </>
         )}
@@ -154,110 +238,147 @@ export function AddSharedInfoModal({ role, organization, onClose }) {
     </div>
   );
 }
-export function DealRoom({ role, dealConfirmed, onNavigate }) {
+
+const ROOM_STATUS = {
+  active: "Active",
+  finalized: "Deal Closed / Confirmed",
+  closed: "Room Closed",
+};
+const CONTRACT_STATUS = {
+  draft: "Draft",
+  pending: "Awaiting Buyer Confirmation",
+  confirmed: "Confirmed",
+  revision_requested: "Revision Requested",
+  declined: "Declined",
+  cancelled: "Cancelled",
+};
+
+export function DealRoom({ role, roomId, onRoomResolved, onNavigate }) {
+  // No room selected yet (e.g. top-nav "Deal Room"): open the most recent one
+  const rooms = useApi(
+    () => (roomId ? Promise.resolve(null) : api.rooms()),
+    [roomId],
+  );
+  useEffect(() => {
+    if (!roomId && rooms.data?.length) onRoomResolved(rooms.data[0].id);
+  }, [roomId, rooms.data, onRoomResolved]);
+
+  if (!roomId) {
+    return (
+      <main className="room-page">
+        <ApiStatus
+          loading={rooms.loading}
+          error={rooms.error}
+          onRetry={rooms.reload}
+        />
+        {rooms.data?.length === 0 && (
+          <section className="inbox-empty">
+            <Icon name="mail" size={22} />
+            <h2>No Deal Room yet</h2>
+            <p>
+              A room is created when the Seller Manager accepts a connection
+              request.
+            </p>
+          </section>
+        )}
+      </main>
+    );
+  }
+  return (
+    <Room key={roomId} role={role} roomId={roomId} onNavigate={onNavigate} />
+  );
+}
+
+const AI_PROMPTS = {
+  seller: [
+    ["What is the MOQ?", "What is the MOQ?"],
+    ["Summarize delivery schedule", "What is the delivery schedule?"],
+    ["Ask for unshared data", "What is the buyer's budget?"],
+  ],
+  buyer: [
+    ["What is the MOQ?", "What is the MOQ?"],
+    ["Summarize delivery schedule", "What is the delivery schedule?"],
+    ["Ask for unshared data", "What is the seller's floor price?"],
+  ],
+};
+
+function Room({ role, roomId, onNavigate }) {
   const manager = role.endsWith("Manager");
-  const sellerSide = role.startsWith("Seller");
-  const organization = sellerSide ? "Mekong Agro" : "Phnom Penh Imports";
   const [tab, setTab] = useState("listing");
   const [mobileTab, setMobileTab] = useState("chat");
-  const [roomStatus, setRoomStatus] = useState(
-    dealConfirmed ? "Deal Closed / Confirmed" : "Active",
-  );
-  const [showUpdate, setShowUpdate] = useState(true);
   const [confirmClose, setConfirmClose] = useState(false);
   const [shareModal, setShareModal] = useState(false);
-  const [revoked, setRevoked] = useState([]);
   const [directMessage, setDirectMessage] = useState("");
-  const [messages, setMessages] = useState([
-    {
-      name: "Sokha Lim",
-      org: "Phnom Penh Imports",
-      role: "Buyer Staff",
-      text: "Could you confirm whether the 20-ton lot can reach Phnom Penh before November 30?",
-      time: "10:42",
-    },
-    {
-      name: "Nguyen Lan",
-      org: "Mekong Agro",
-      role: "Seller Manager",
-      text: "Yes. We can support that schedule from Cat Lai. I’ll share the proposed delivery schedule in this room.",
-      time: "10:48",
-    },
-    {
-      name: "Dara Chhim",
-      org: "Phnom Penh Imports",
-      role: "Buyer Manager",
-      text: "Thank you. We will review the schedule and prepare proposed payment terms.",
-      time: "10:51",
-    },
-  ]);
-  const [aiTopic, setAiTopic] = useState("moq");
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState(null);
+  const streamRef = useRef(null);
+
+  const room = useApi(() => api.room(roomId), [roomId], 5000);
+  const messages = useApi(() => api.messages(roomId), [roomId], 3000);
+  const assistant = useApi(() => api.assistantHistory(roomId), [roomId], 5000);
+
+  useEffect(() => {
+    const el = streamRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.data?.length]);
+
+  if (!room.data) {
+    return (
+      <main className="room-page">
+        <ApiStatus
+          loading={room.loading}
+          error={room.error}
+          onRetry={room.reload}
+        />
+      </main>
+    );
+  }
+  const r = room.data;
+  const organization = r.my_side === "seller" ? r.seller_org : r.buyer_org;
+  const roomStatus = ROOM_STATUS[r.status];
+  const pf = r.listing.public_fields;
+
+  const run = async (fn) => {
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(e);
+    }
+  };
   const addMessage = (event) => {
     event.preventDefault();
     if (!directMessage.trim()) return;
-    setMessages([
-      ...messages,
-      {
-        name: sellerSide ? "Nguyen Lan" : "Dara Chhim",
-        org: organization,
-        role: role,
-        text: directMessage,
-        time: "Now",
-      },
-    ]);
-    setDirectMessage("");
+    run(async () => {
+      await api.sendMessage(roomId, directMessage);
+      setDirectMessage("");
+      messages.reload(true);
+    });
   };
-  const aiAnswers = {
-    moq: {
-      question: "What is the minimum order quantity?",
-      answer:
-        "The minimum order quantity for this listing is 10 Tons. The available quantity is 20 Tons.",
-      source: "Source: Listing LST-VN-0161 v1 · MOQ",
-    },
-    schedule: {
-      question: "What delivery schedule was proposed?",
-      answer:
-        "The seller proposed delivery to Phnom Penh by November 28, 2026, subject to final contract confirmation.",
-      source: "Source: Shared in Room · Delivery Schedule",
-    },
-    missing: {
-      question: sellerSide
-        ? "What are the buyer’s unshared payment terms?"
-        : "What is the seller’s floor price?",
-      answer:
-        "I do not have this information in the room yet. You may ask your partner in the direct chat.",
-      source: "Source: Room access policy · Unshared information",
-    },
+  const ask = (text) => {
+    if (!text.trim()) return;
+    setAsking(true);
+    run(async () => {
+      await api.ask(roomId, text);
+      setQuestion("");
+      await assistant.reload(true);
+    }).finally(() => setAsking(false));
   };
-  const aiAnswer = aiAnswers[aiTopic];
-  const sharedItems = [
-    {
-      id: "schedule",
-      category: "Delivery Schedule",
-      value: "Delivery to Phnom Penh by Nov 28, 2026",
-      unit: "Date",
-      org: "Mekong Agro",
-      own: sellerSide,
-    },
-    {
-      id: "terms",
-      category: "Payment Terms",
-      value: "30% deposit · 70% against shipping documents",
-      unit: "Percent",
-      org: "Phnom Penh Imports",
-      own: !sellerSide,
-    },
-  ].filter((item) => !revoked.includes(item.id));
+  const turns = assistant.data ?? [];
+
   return (
     <main className="room-page">
       <header className="room-header">
         <div>
           <p className="eyebrow">Private Deal Room</p>
-          <h1>DR-0402</h1>
+          <h1>{r.id}</h1>
         </div>
         <div className="room-link">
           <span>Linked listing</span>
-          <strong>LST-VN-0161 v1</strong>
+          <strong>
+            {r.listing.id} {r.listing.version_label}
+          </strong>
         </div>
         <span
           className={`room-status ${roomStatus
@@ -267,15 +388,7 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
         >
           {roomStatus}
         </span>
-        <label className="update-toggle">
-          <span>v2 update banner</span>
-          <Toggle
-            checked={showUpdate}
-            label="Toggle listing update banner"
-            onChange={() => setShowUpdate(!showUpdate)}
-          />
-        </label>
-        {manager && roomStatus !== "Room Closed" && (
+        {r.permissions.close && (
           <button
             className="close-room-action"
             type="button"
@@ -290,41 +403,57 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
         <div className="room-close-confirm">
           <Icon name="shield" size={18} />
           <span>
-            <strong>Close Deal Room DR-0402?</strong>
-            Messaging and new sharing will stop. Existing records remain
-            versioned.
+            <strong>Close Deal Room {r.id}?</strong>
+            Messaging and new sharing will stop. A pending contract is
+            cancelled. Existing records remain versioned.
           </span>
           <button type="button" onClick={() => setConfirmClose(false)}>
             Cancel
           </button>
           <Button
-            onClick={() => {
-              setRoomStatus("Room Closed");
-              setConfirmClose(false);
-            }}
+            onClick={() =>
+              run(async () => {
+                await api.closeRoom(roomId);
+                setConfirmClose(false);
+                room.reload(true);
+                messages.reload(true);
+              })
+            }
           >
             Confirm Close
           </Button>
         </div>
       )}
 
-      {showUpdate && (
+      {r.listing_changed && (
         <div className="room-update-banner">
           <span>
             <Icon name="file" size={17} />
           </span>
           <div>
-            <strong>Underlying listing updated to v2</strong>
+            <strong>
+              Underlying listing updated to {r.listing.version_label}
+            </strong>
             <small>
-              This room remains linked to requested snapshot v1. Review the
-              field diff before using newer data.
+              The assistant now answers from the current version. Review the
+              listing tab for the latest public fields.
             </small>
           </div>
-          <button type="button" onClick={() => setTab("listing")}>
-            View version history
+          <button
+            type="button"
+            onClick={() =>
+              run(async () => {
+                setTab("listing");
+                await api.ackListingVersion(roomId);
+                room.reload(true);
+              })
+            }
+          >
+            Mark as reviewed
           </button>
         </div>
       )}
+      <ErrorNote error={error} />
 
       <div className="mobile-room-tabs">
         {[
@@ -370,29 +499,23 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
               <div className="room-listing">
                 <div className="room-panel-heading">
                   <div>
-                    <p className="eyebrow">Public snapshot · v1</p>
-                    <h2>Robusta Coffee Grade 1</h2>
+                    <p className="eyebrow">
+                      Public listing · {r.listing.version_label}
+                    </p>
+                    <h2>{pf.product?.value}</h2>
                   </div>
                   <span className="data-tag public">Public</span>
                 </div>
                 <div className="room-fields">
-                  <PreviewField label="Quantity" value="20 Tons" />
-                  <PreviewField label="MOQ" value="10 Tons" />
-                  <PreviewField label="Validity" value="Nov 30, 2026" />
-                  <PreviewField label="Grade" value="Screen 18" />
-                  <PreviewField label="Origin" value="Dak Lak, Vietnam" />
-                  <PreviewField label="Port" value="Cat Lai, HCMC" />
-                </div>
-                <div className="version-history">
-                  <span>Version history</span>
-                  <div>
-                    <strong>v1 · Room snapshot</strong>
-                    <small>Preserved Jun 18, 2026</small>
-                  </div>
-                  <div>
-                    <strong>v2 · Current listing</strong>
-                    <small>Validity and loading port updated</small>
-                  </div>
+                  {Object.entries(pf)
+                    .filter(([key]) => key !== "product")
+                    .map(([key, f]) => (
+                      <PreviewField
+                        key={key}
+                        label={f.label}
+                        value={fmtField(f)}
+                      />
+                    ))}
                 </div>
               </div>
             )}
@@ -404,7 +527,7 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
                     <p className="eyebrow">Room-only data</p>
                     <h2>Shared information</h2>
                   </div>
-                  {manager && (
+                  {r.permissions.share && (
                     <Button onClick={() => setShareModal(true)}>
                       <Icon name="plus" size={14} /> Add Shared Info
                     </Button>
@@ -414,27 +537,40 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
                   Available to both partners and this room’s grounded AI.
                 </p>
                 <div className="shared-item-list">
-                  {sharedItems.map((item) => (
-                    <article className="shared-item" key={item.id}>
+                  {r.shared_items.length === 0 && (
+                    <p className="panel-helper">Nothing shared yet.</p>
+                  )}
+                  {r.shared_items.map((item) => (
+                    <article
+                      className="shared-item"
+                      key={item.id}
+                      style={item.revoked_at ? { opacity: 0.55 } : undefined}
+                    >
                       <span className="shared-item-icon">
                         <Icon name="file" size={16} />
                       </span>
                       <div>
-                        <span>{item.category}</span>
-                        <strong>{item.value}</strong>
-                        <small>
-                          Shared in Room · by {item.org} · {item.unit}
-                        </small>
+                        <span>{item.label}</span>
+                        <strong>{fmtValue(item.value, item.unit)}</strong>
+                        <small>{item.badge}</small>
                       </div>
-                      {manager && item.own && (
-                        <button
-                          title="Revoking stops the AI from using this data going forward"
-                          type="button"
-                          onClick={() => setRevoked([...revoked, item.id])}
-                        >
-                          Revoke
-                        </button>
-                      )}
+                      {manager &&
+                        item.side === r.my_side &&
+                        !item.revoked_at &&
+                        r.status === "active" && (
+                          <button
+                            title="Revoking stops the AI from using this data going forward"
+                            type="button"
+                            onClick={() =>
+                              run(async () => {
+                                await api.revoke(roomId, item.id);
+                                room.reload(true);
+                              })
+                            }
+                          >
+                            Revoke
+                          </button>
+                        )}
                     </article>
                   ))}
                 </div>
@@ -444,58 +580,63 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
             {tab === "contract" && (
               <div className="room-contract">
                 <p className="eyebrow">Contract · Versioned</p>
-                <h2>No contract created yet.</h2>
-                <p>
-                  Create a versioned draft from agreed room information. Both
-                  organization managers must confirm the final version.
-                </p>
-                {role === "Seller Manager" ? (
-                  <Button onClick={() => onNavigate("contract-edit")}>
-                    Create Contract · R3 <Icon name="arrow" size={15} />
-                  </Button>
+                {r.contract ? (
+                  <>
+                    <h2>
+                      Contract v{r.contract.version} ·{" "}
+                      {CONTRACT_STATUS[r.contract.status]}
+                    </h2>
+                    <p>
+                      Total {fmtNumber(r.contract.total)} {r.contract.currency} ·
+                      calculated by the system.
+                    </p>
+                    <Button onClick={() => onNavigate("contract-review")}>
+                      View Contract · R4 <Icon name="arrow" size={15} />
+                    </Button>
+                    {r.permissions.create_contract &&
+                      ["revision_requested", "declined"].includes(
+                        r.contract.status,
+                      ) && (
+                        <button
+                          className="contract-link"
+                          type="button"
+                          onClick={() => onNavigate("contract-edit")}
+                        >
+                          Create v{r.contract.version + 1} · R3
+                        </button>
+                      )}
+                  </>
                 ) : (
-                  <Button
-                    kind={manager ? "primary" : "secondary"}
-                    onClick={() => onNavigate("contract-review")}
-                  >
-                    View Contract · R4 <Icon name="arrow" size={15} />
-                  </Button>
+                  <>
+                    <h2>No contract created yet.</h2>
+                    <p>
+                      The Seller Manager creates a versioned contract from the
+                      listing and room-shared information. The Buyer Manager
+                      confirms it.
+                    </p>
+                    {r.permissions.create_contract && (
+                      <Button onClick={() => onNavigate("contract-edit")}>
+                        Create Contract · R3 <Icon name="arrow" size={15} />
+                      </Button>
+                    )}
+                  </>
                 )}
-                <button
-                  className="contract-link"
-                  type="button"
-                  onClick={() => onNavigate("contract-review")}
-                >
-                  View confirmed contract · R4
-                </button>
               </div>
             )}
 
             {tab === "members" && (
               <div className="room-members">
-                <p className="eyebrow">4 room members</p>
+                <p className="eyebrow">{r.members.length} room members</p>
                 <h2>Participating organizations</h2>
-                {[
-                  ["Nguyen Lan", "Mekong Agro", "Seller Manager"],
-                  ["Tran Minh", "Mekong Agro", "Seller Staff"],
-                  ["Dara Chhim", "Phnom Penh Imports", "Buyer Manager"],
-                  ["Sokha Lim", "Phnom Penh Imports", "Buyer Staff"],
-                ].map(([name, org, memberRole]) => (
-                  <div className="room-member" key={name}>
-                    <span className="member-avatar">
-                      {name
-                        .split(" ")
-                        .map((word) => word[0])
-                        .join("")}
-                    </span>
+                {r.members.map((m) => (
+                  <div className="room-member" key={`${m.name}-${m.org}`}>
+                    <span className="member-avatar">{initials(m.name)}</span>
                     <span>
-                      <strong>{name}</strong>
-                      <small>{org}</small>
+                      <strong>{m.name}</strong>
+                      <small>{m.org}</small>
                     </span>
-                    <span
-                      className={`role-badge ${memberRole.startsWith("Seller") ? "seller" : "buyer"}`}
-                    >
-                      {memberRole}
+                    <span className={`role-badge ${m.side}`}>
+                      {m.role_label}
                     </span>
                   </div>
                 ))}
@@ -512,45 +653,56 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
               <p className="eyebrow">Partner channel</p>
               <h2>Direct Chat</h2>
             </div>
-            <span className="chat-members">4 members</span>
+            <span className="chat-members">{r.members.length} members</span>
           </div>
           <div className="direct-chat-notice">
             <Icon name="lock" size={13} />
             Direct messages are never read by the AI Assistant.
           </div>
-          <div className="message-stream">
-            {messages.map((message, index) => {
-              const own = message.org === organization;
-              return (
+          <div className="message-stream" ref={streamRef}>
+            {(messages.data ?? []).map((message) =>
+              message.system ? (
+                <div className="direct-chat-notice" key={message.id}>
+                  <Icon name="shield" size={13} />
+                  {message.text}
+                </div>
+              ) : (
                 <div
-                  className={`partner-message ${own ? "own" : ""}`}
-                  key={`${message.time}-${index}`}
+                  className={`partner-message ${message.sender_org === organization ? "own" : ""}`}
+                  key={message.id}
                 >
                   <div>
-                    <strong>{message.name}</strong>
-                    <span>{message.time}</span>
+                    <strong>{message.sender_name}</strong>
+                    <span>{fmtTime(message.created_at)}</span>
                   </div>
                   <div className="message-identity">
-                    <small>{message.org}</small>
-                    <span
-                      className={`role-badge ${message.role.startsWith("Seller") ? "seller" : "buyer"}`}
-                    >
-                      {message.role}
+                    <small>{message.sender_org}</small>
+                    <span className={`role-badge ${message.side}`}>
+                      {message.sender_role}
                     </span>
                   </div>
                   <p>{message.text}</p>
                 </div>
-              );
-            })}
+              ),
+            )}
           </div>
           <form className="partner-composer" onSubmit={addMessage}>
             <input
               aria-label="Message your partner"
-              placeholder="Message your partner organization…"
+              disabled={!r.permissions.chat}
+              placeholder={
+                r.permissions.chat
+                  ? "Message your partner organization…"
+                  : `Room is ${roomStatus.toLowerCase()} · messaging stopped`
+              }
               value={directMessage}
               onChange={(event) => setDirectMessage(event.target.value)}
             />
-            <button type="submit" aria-label="Send direct message">
+            <button
+              type="submit"
+              aria-label="Send direct message"
+              disabled={!r.permissions.chat}
+            >
               <Icon name="arrow" size={16} />
             </button>
           </form>
@@ -570,47 +722,79 @@ export function DealRoom({ role, dealConfirmed, onNavigate }) {
           </div>
           <div className="private-ai-grounding">
             <Icon name="shield" size={13} />
-            Strictly grounded in listing and room-shared data
+            Strictly grounded in listing, room-shared data and contract summary
           </div>
           <div className="private-ai-thread">
-            <div className="ai-user-message">{aiAnswer.question}</div>
-            <div className="ai-grounded-answer">
-              <span className="ai-avatar">
-                <Icon name="spark" size={16} />
-              </span>
-              <p>{aiAnswer.answer}</p>
-              <span className="citation-pill">{aiAnswer.source}</span>
-            </div>
+            {turns.length === 0 && (
+              <p className="panel-helper">
+                Ask about this room. Answers always cite their source.
+              </p>
+            )}
+            {turns.map((t, i) => (
+              <div key={`${t.created_at}-${i}`}>
+                <div className="ai-user-message">{t.question}</div>
+                <div className="ai-grounded-answer">
+                  <span className="ai-avatar">
+                    <Icon name="spark" size={16} />
+                  </span>
+                  <p style={{ whiteSpace: "pre-line" }}>{t.answer}</p>
+                  <span className="citation-pill">
+                    {t.sources.length
+                      ? `Source: ${t.sources
+                          .map((s) =>
+                            s.type === "listing"
+                              ? `Listing ${s.id} v${s.version} · ${s.field}`
+                              : s.type === "shared_item"
+                                ? `Shared in Room · ${s.label}`
+                                : `Contract v${s.version}`,
+                          )
+                          .join(" · ")}`
+                      : "Source: Room access policy · Not available in room"}
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
           <div className="ai-room-prompts">
             <span>Ask from room data</span>
-            <button type="button" onClick={() => setAiTopic("moq")}>
-              What is the MOQ?
-            </button>
-            <button type="button" onClick={() => setAiTopic("schedule")}>
-              Summarize delivery schedule
-            </button>
-            <button type="button" onClick={() => setAiTopic("missing")}>
-              Ask for unshared data
-            </button>
+            {AI_PROMPTS[r.my_side].map(([label, q]) => (
+              <button
+                key={label}
+                type="button"
+                disabled={asking}
+                onClick={() => ask(q)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div className="private-ai-input">
+          <form
+            className="private-ai-input"
+            onSubmit={(e) => {
+              e.preventDefault();
+              ask(question);
+            }}
+          >
             <input
               aria-label="Ask private AI assistant"
-              placeholder="Ask about room data…"
+              placeholder={asking ? "Thinking…" : "Ask about room data…"}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
             />
-            <button type="button" aria-label="Ask AI">
+            <button type="submit" aria-label="Ask AI" disabled={asking}>
               <Icon name="arrow" size={15} />
             </button>
-          </div>
+          </form>
         </aside>
       </div>
 
-      {shareModal && manager && (
+      {shareModal && r.permissions.share && (
         <AddSharedInfoModal
+          room={r}
           role={role}
           organization={organization}
           onClose={() => setShareModal(false)}
+          onShared={() => room.reload(true)}
         />
       )}
     </main>

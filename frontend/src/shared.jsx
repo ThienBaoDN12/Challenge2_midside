@@ -206,9 +206,15 @@ export function Button({
   kind = "primary",
   type = "button",
   onClick,
+  disabled = false,
 }) {
   return (
-    <button className={`button button-${kind}`} type={type} onClick={onClick}>
+    <button
+      className={`button button-${kind}`}
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </button>
   );
@@ -345,6 +351,45 @@ export function LegalDisclaimer() {
         This is an in-system confirmation only, not a digital signature, and
         does not replace a formal legal contract.
       </span>
+    </div>
+  );
+}
+
+// Loading / error placeholder for API-backed screens
+export function ApiStatus({ loading, error, onRetry }) {
+  if (!loading && !error) return null;
+  return (
+    <section className="inbox-empty">
+      <Icon name={error ? "alert" : "clock"} size={22} />
+      <h2>{error ? "Something went wrong" : "Loading…"}</h2>
+      {error && (
+        <p>
+          {error.message}
+          {error.status === undefined &&
+            " · Is the backend running on http://localhost:8000?"}
+        </p>
+      )}
+      {error && onRetry && (
+        <Button kind="secondary" onClick={() => onRetry()}>
+          Retry
+        </Button>
+      )}
+    </section>
+  );
+}
+
+// Inline error message from an ApiError (policy messages are user-facing)
+export function ErrorNote({ error }) {
+  if (!error) return null;
+  return (
+    <div className="contract-policy-alert">
+      <span>
+        <Icon name="alert" size={16} />
+      </span>
+      <div>
+        <strong>{error.code ? error.code.replace("_", " ") : "Error"}</strong>
+        <p>{error.message}</p>
+      </div>
     </div>
   );
 }

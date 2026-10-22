@@ -1,4 +1,15 @@
 import { useState } from "react";
+import { api } from "../api";
+import { useApi } from "../hooks";
+import {
+  fmtDate,
+  fmtField,
+  fmtTime,
+  initials,
+  REQUEST_STATUS,
+  timeLeft,
+  title,
+} from "../format";
 import { PreviewField } from "./Seller";
 import {
   Icon,
@@ -7,105 +18,132 @@ import {
   SelectField,
   ConnectionStatusBadge,
   FilterSelect,
+  ApiStatus,
+  ErrorNote,
 } from "../shared";
-export const buyerMatches = [
-  {
-    id: "LST-VN-0161",
-    seller: "Mekong Agro Export",
-    status: "Business Unverified",
-    product: "Robusta Coffee Grade 1",
-    quantity: "20 Tons",
-    validity: "Nov 30, 2026",
-    port: "Cat Lai, HCMC",
-    score: "94%",
-    matched: ["Product", "Quantity", "Delivery window"],
-    unmet: "Freight to Phnom Penh unverified",
-  },
-  {
-    id: "LST-VN-0154",
-    seller: "Dak Lak Cooperative",
-    status: "Business Verified",
-    product: "Robusta Coffee Screen 18",
-    quantity: "35 Tons",
-    validity: "Dec 10, 2026",
-    port: "Cat Lai, HCMC",
-    score: "89%",
-    matched: ["Product", "Quantity"],
-    unmet: "Delivery date requires confirmation",
-  },
-  {
-    id: "LST-VN-0147",
-    seller: "Highland Origin Co.",
-    status: "Business Unverified",
-    product: "Robusta Coffee Grade 1",
-    quantity: "24 Tons",
-    validity: "Dec 15, 2026",
-    port: "Da Nang",
-    score: "82%",
-    matched: ["Product", "Minimum quantity"],
-    unmet: "Port preference unmet",
-  },
-];
-export function DiscoveryCard({ listing, onOpen }) {
+
+function ago(iso) {
+  const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (mins < 60) return `${Math.max(1, mins)}m ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+  return fmtDate(iso.slice(0, 10));
+}
+
+export function DiscoveryCard({ result, onOpen }) {
+  const listing = result.listing ?? result;
+  const pf = listing.public_fields;
   return (
     <article className="discovery-card">
       <div className="discovery-card-head">
-        <span>{listing.id}</span>
-        <span className="match-score">{listing.score} match</span>
+        <span>
+          {listing.id} · {listing.version_label}
+        </span>
+        {result.score !== undefined && (
+          <span className="match-score">{result.score}% match</span>
+        )}
       </div>
-      <h3>{listing.product}</h3>
+      <h3>{pf.product?.value}</h3>
       <p>
-        {listing.seller} · <strong>{listing.status}</strong>
+        {listing.seller.name} ·{" "}
+        <strong>
+          {listing.seller.business_verified
+            ? "Business Verified"
+            : "Business Unverified"}
+        </strong>
       </p>
       <div className="discovery-facts">
         <div>
           <span>Quantity</span>
-          <strong>{listing.quantity}</strong>
+          <strong>{fmtField(pf.quantity)}</strong>
         </div>
         <div>
-          <span>Available before</span>
-          <strong>{listing.validity}</strong>
+          <span>Available until</span>
+          <strong>{fmtDate(listing.valid_until)}</strong>
         </div>
         <div>
           <span>Loading port</span>
-          <strong>{listing.port}</strong>
+          <strong>{fmtField(pf.port_of_loading)}</strong>
         </div>
       </div>
-      <div className="criteria-list">
-        {listing.matched.map((criterion) => (
-          <span className="criteria matched" key={criterion}>
-            <Icon name="check" size={12} /> {criterion}
-          </span>
-        ))}
-        <span className="criteria unmet">
-          <Icon name="alert" size={14} /> {listing.unmet}
-        </span>
-      </div>
+      {result.matched && (
+        <div className="criteria-list">
+          {result.matched.map((criterion) => (
+            <span className="criteria matched" key={criterion}>
+              <Icon name="check" size={12} /> {criterion}
+            </span>
+          ))}
+          {result.unmet.map((criterion) => (
+            <span className="criteria unmet" key={criterion}>
+              <Icon name="alert" size={14} /> {criterion}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="discovery-card-foot">
-        <span>Updated 2h ago</span>
-        <button type="button" onClick={onOpen}>
+        <span>Updated {ago(listing.updated_at)}</span>
+        <button type="button" onClick={() => onOpen(listing.id)}>
           View public listing <Icon name="arrow" size={14} />
         </button>
       </div>
     </article>
   );
 }
-export function BuyerWorkspace({ role, onOpenListing }) {
+
+const PROMPTS = [
+  "Robusta Coffee 20 tons delivered to Phnom Penh before 30/11",
+  "Robusta Coffee delivered to Phnom Penh",
+  "Durian 100 tons before Dec 1",
+];
+const PRODUCTS = [
+  ["coffee", "Coffee"],
+  ["pepper", "Black Pepper"],
+  ["cashew", "Cashew"],
+  ["rice", "Rice"],
+];
+
+export function BuyerWorkspace({ onOpenListing }) {
   const [mode, setMode] = useState("ai");
-  const [query, setQuery] = useState(
-    "Robusta Coffee 20 tons delivered to Phnom Penh before Nov 30",
-  );
-  const [aiState, setAiState] = useState("results");
-  const submitQuery = (event) => {
-    event.preventDefault();
-    if (/cashew|500/i.test(query)) {
-      setAiState("zero");
-    } else if (!/\d+\s*(tons?|kg)/i.test(query)) {
-      setAiState("followup");
-    } else {
-      setAiState("results");
+  const [query, setQuery] = useState(PROMPTS[0]);
+  const [criteria, setCriteria] = useState(null);
+  const [ai, setAi] = useState(null);
+  const [aiError, setAiError] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [filters, setFilters] = useState({
+    product_type: "coffee",
+    min_quantity: "20",
+    unit: "ton",
+    available_before: "2026-11-30",
+  });
+  const [standard, setStandard] = useState(null);
+
+  const runAi = async (text, extra = null, relax = null) => {
+    setSearching(true);
+    setAiError(null);
+    try {
+      const merged = extra ? { ...(criteria ?? {}), ...extra } : null;
+      const res = await api.discover(text, merged, relax);
+      setCriteria(res.status === "needs_clarification" ? res.criteria : merged);
+      setAi(res);
+    } catch (e) {
+      setAiError(e);
+    } finally {
+      setSearching(false);
     }
   };
+  const runStandard = async () => {
+    setSearching(true);
+    try {
+      const params = Object.fromEntries(
+        Object.entries(filters).filter(([, v]) => v !== ""),
+      );
+      setStandard(await api.search(params));
+    } catch (e) {
+      setStandard({ results: [], error: e });
+    } finally {
+      setSearching(false);
+    }
+  };
+
   return (
     <main className="page workspace-page discovery-page">
       <div className="workspace-heading discovery-heading">
@@ -147,28 +185,51 @@ export function BuyerWorkspace({ role, onOpenListing }) {
             <h2>Filter public listings</h2>
           </div>
           <div className="standard-filters">
-            <SelectField label="Product" value="Robusta Coffee">
-              <option>Robusta Coffee</option>
-              <option>Black Pepper</option>
-              <option>Cashew</option>
-              <option>Rice</option>
+            <SelectField
+              label="Product"
+              value={filters.product_type}
+              onChange={(v) => setFilters({ ...filters, product_type: v })}
+            >
+              {PRODUCTS.map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
             </SelectField>
-            <Field label="Quantity" value="20" />
-            <SelectField label="Unit" value="Tons">
-              <option>Tons</option>
-              <option>Kilograms</option>
+            <Field
+              label="Quantity"
+              value={filters.min_quantity}
+              onChange={(v) => setFilters({ ...filters, min_quantity: v })}
+            />
+            <SelectField
+              label="Unit"
+              value={filters.unit}
+              onChange={(v) => setFilters({ ...filters, unit: v })}
+            >
+              <option value="ton">Tons</option>
+              <option value="kg">Kilograms</option>
             </SelectField>
-            <Field label="Available before date" value="2026-11-30" />
-            <Button>Search listings</Button>
+            <Field
+              label="Available until at least"
+              type="date"
+              value={filters.available_before}
+              onChange={(v) => setFilters({ ...filters, available_before: v })}
+            />
+            <Button onClick={runStandard} disabled={searching}>
+              {searching ? "Searching…" : "Search listings"}
+            </Button>
           </div>
           <div className="standard-results">
-            {buyerMatches.slice(0, 2).map((listing) => (
+            {standard?.results.map((listing) => (
               <DiscoveryCard
-                listing={listing}
+                result={listing}
                 key={listing.id}
                 onOpen={onOpenListing}
               />
             ))}
+            {standard && standard.results.length === 0 && (
+              <p>No public listing matches these filters.</p>
+            )}
           </div>
         </section>
       ) : (
@@ -188,71 +249,62 @@ export function BuyerWorkspace({ role, onOpenListing }) {
 
           <div className="quick-prompts">
             <span>Try a prompt</span>
-            <button
-              type="button"
-              onClick={() => {
-                setQuery(
-                  "Robusta Coffee 20 tons delivered to Phnom Penh before Nov 30",
-                );
-                setAiState("results");
-              }}
-            >
-              Robusta Coffee 20 tons delivered to Phnom Penh before Nov 30
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setQuery("Robusta Coffee delivered to Phnom Penh");
-                setAiState("followup");
-              }}
-            >
-              Robusta Coffee delivered to Phnom Penh
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setQuery("Organic cashew 500 tons before Oct 1");
-                setAiState("zero");
-              }}
-            >
-              Organic cashew 500 tons before Oct 1
-            </button>
+            {PROMPTS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => {
+                  setQuery(p);
+                  setCriteria(null);
+                  runAi(p);
+                }}
+              >
+                {p}
+              </button>
+            ))}
           </div>
 
-          <form className="ai-query" onSubmit={submitQuery}>
+          <form
+            className="ai-query"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setCriteria(null);
+              runAi(query);
+            }}
+          >
             <Icon name="spark" size={17} />
             <input
               aria-label="Ask Discovery AI"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
-            <button type="submit">
-              Search <Icon name="arrow" size={14} />
+            <button type="submit" disabled={searching}>
+              {searching ? "Searching…" : "Search"}{" "}
+              <Icon name="arrow" size={14} />
             </button>
           </form>
 
-          {aiState === "followup" && (
+          <ErrorNote error={aiError} />
+
+          {ai?.status === "needs_clarification" && (
             <div className="ai-response followup-response">
               <span className="ai-avatar">
                 <Icon name="spark" size={18} />
               </span>
               <div>
-                <strong>What quantity do you need, and in which unit?</strong>
+                <strong>{ai.question}</strong>
                 <p>
-                  I need both values to compare your request accurately against
-                  public listings.
+                  I need this to compare your request accurately against public
+                  listings.
                 </p>
                 <div className="quick-replies">
-                  {["10 Tons", "20 Tons", "50 Tons"].map((reply) => (
+                  {ai.quick_replies.map((reply) => (
                     <button
-                      key={reply}
+                      key={reply.label}
                       type="button"
-                      onClick={() => {
-                        setQuery(`${query} · ${reply}`);
-                        setAiState("results");
-                      }}
+                      onClick={() => runAi(query, reply.value)}
                     >
-                      {reply}
+                      {reply.label}
                     </button>
                   ))}
                 </div>
@@ -260,20 +312,23 @@ export function BuyerWorkspace({ role, onOpenListing }) {
             </div>
           )}
 
-          {aiState === "results" && (
+          {ai?.status === "ok" && (
             <div className="matched-results">
               <div className="results-heading">
                 <div>
-                  <span className="section-kicker">3 public matches</span>
+                  <span className="section-kicker">
+                    {ai.results.length} public match
+                    {ai.results.length === 1 ? "" : "es"}
+                  </span>
                   <h2>Best matches for your criteria</h2>
                 </div>
-                <span>Ranked by verified public fields</span>
+                <span>{ai.notice}</span>
               </div>
               <div className="discovery-grid">
-                {buyerMatches.map((listing) => (
+                {ai.results.map((r) => (
                   <DiscoveryCard
-                    listing={listing}
-                    key={listing.id}
+                    result={r}
+                    key={r.listing.id}
                     onOpen={onOpenListing}
                   />
                 ))}
@@ -281,25 +336,21 @@ export function BuyerWorkspace({ role, onOpenListing }) {
             </div>
           )}
 
-          {aiState === "zero" && (
+          {ai?.status === "no_results" && (
             <div className="zero-results">
               <span className="zero-icon">
                 <Icon name="spark" size={23} />
               </span>
               <h2>No seller currently matches all criteria.</h2>
-              <p>
-                I found no public listing that meets this product, quantity, and
-                delivery window. I won’t invent or infer unavailable sellers.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery("Organic cashew 500 tons before Dec 15");
-                  setAiState("results");
-                }}
-              >
-                Relax delivery date criteria to Dec 15?
-              </button>
+              <p>{ai.message} I won’t invent or infer unavailable sellers.</p>
+              {ai.relaxation && (
+                <button
+                  type="button"
+                  onClick={() => runAi(query, criteria, ai.relaxation.apply)}
+                >
+                  {ai.relaxation.description}
+                </button>
+              )}
             </div>
           )}
         </section>
@@ -307,10 +358,27 @@ export function BuyerWorkspace({ role, onOpenListing }) {
     </main>
   );
 }
-export function ConnectionDrawer({ open, onClose }) {
+
+export function ConnectionDrawer({ listing, open, onClose }) {
   const [acknowledged, setAcknowledged] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [message, setMessage] = useState(
+    "Hello, we are interested in discussing availability and delivery to Phnom Penh before November 30.",
+  );
+  const [sent, setSent] = useState(null);
+  const [error, setError] = useState(null);
+  const [sending, setSending] = useState(false);
   if (!open) return null;
+  const send = async () => {
+    setSending(true);
+    setError(null);
+    try {
+      setSent(await api.connect(listing.id, message));
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSending(false);
+    }
+  };
   return (
     <div className="drawer-layer" role="dialog" aria-modal="true">
       <button
@@ -323,7 +391,7 @@ export function ConnectionDrawer({ open, onClose }) {
         <div className="drawer-head">
           <div>
             <p className="eyebrow">Connection request</p>
-            <h2>Mekong Agro Export</h2>
+            <h2>{listing.seller.name}</h2>
           </div>
           <button type="button" onClick={onClose}>
             <Icon name="close" size={18} />
@@ -334,10 +402,10 @@ export function ConnectionDrawer({ open, onClose }) {
             <span>
               <Icon name="check" size={21} />
             </span>
-            <h2>Request sent</h2>
+            <h2>Request {sent.id} sent</h2>
             <p>
-              Mekong Agro Export will receive your message. No inventory has
-              been reserved.
+              {listing.seller.name} will receive your message. No inventory has
+              been reserved. The request expires in 7 days.
             </p>
             <Button kind="secondary" onClick={onClose}>
               Done
@@ -346,13 +414,16 @@ export function ConnectionDrawer({ open, onClose }) {
         ) : (
           <>
             <div className="request-summary">
-              <span>LST-VN-0161 · v1</span>
-              <strong>Robusta Coffee Grade 1 · 20 Tons</strong>
+              <span>
+                {listing.id} · {listing.version_label}
+              </span>
+              <strong>{title(listing)}</strong>
             </div>
             <label className="field">
               <span>Message</span>
               <textarea
-                defaultValue="Hello, we are interested in discussing availability and delivery to Phnom Penh before November 30."
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
                 rows={6}
               />
             </label>
@@ -367,13 +438,15 @@ export function ConnectionDrawer({ open, onClose }) {
                 inventory
               </span>
             </label>
+            <ErrorNote error={error} />
             <button
               className="button button-primary drawer-submit"
-              disabled={!acknowledged}
+              disabled={!acknowledged || sending}
               type="button"
-              onClick={() => setSent(true)}
+              onClick={send}
             >
-              Send Request <Icon name="arrow" size={16} />
+              {sending ? "Sending…" : "Send Request"}{" "}
+              <Icon name="arrow" size={16} />
             </button>
           </>
         )}
@@ -381,30 +454,65 @@ export function ConnectionDrawer({ open, onClose }) {
     </div>
   );
 }
-export function BuyerDetail({ role, onBack }) {
+
+export function BuyerDetail({ role, listingId, onBack }) {
   const manager = role === "BM";
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [note, setNote] = useState(
     "Strong quantity and delivery match. Please review supplier verification.",
   );
   const [recommended, setRecommended] = useState(false);
+  const [error, setError] = useState(null);
+  const {
+    data: listing,
+    error: loadError,
+    loading,
+    reload,
+  } = useApi(() => api.listing(listingId), [listingId]);
+
+  const recommend = async () => {
+    setError(null);
+    try {
+      await api.propose(listingId, note);
+      setRecommended(true);
+    } catch (e) {
+      setError(e);
+    }
+  };
+
+  if (!listing)
+    return (
+      <main className="page workspace-page buyer-detail-page">
+        <button className="back-action" type="button" onClick={onBack}>
+          <Icon name="arrow" size={14} /> Back to discovery
+        </button>
+        <ApiStatus loading={loading} error={loadError} onRetry={reload} />
+      </main>
+    );
+
+  const verified = listing.seller.business_verified;
   return (
     <main className="page workspace-page buyer-detail-page">
       <button className="back-action" type="button" onClick={onBack}>
         <Icon name="arrow" size={14} /> Back to discovery
       </button>
       <section className="seller-profile">
-        <div className="seller-monogram">MA</div>
+        <div className="seller-monogram">{initials(listing.seller.name)}</div>
         <div>
           <p className="eyebrow">Seller organization</p>
-          <h1>Mekong Agro Export</h1>
-          <p>Vietnam · Business Unverified</p>
+          <h1>{listing.seller.name}</h1>
+          <p>
+            {listing.seller.country} ·{" "}
+            {verified ? "Business Verified" : "Business Unverified"}
+          </p>
         </div>
         <div className="seller-badges">
           <span className="tag verified">
             <Icon name="check" size={13} /> Email Verified
           </span>
-          <span className="tag unverified">Business Unverified</span>
+          <span className={`tag ${verified ? "verified" : "unverified"}`}>
+            {verified ? "Business Verified" : "Business Unverified"}
+          </span>
         </div>
       </section>
 
@@ -412,8 +520,10 @@ export function BuyerDetail({ role, onBack }) {
         <section className="public-detail">
           <div className="detail-title">
             <div>
-              <span className="section-kicker">LST-VN-0161 · v1</span>
-              <h2>Robusta Coffee Grade 1</h2>
+              <span className="section-kicker">
+                {listing.id} · {listing.version_label}
+              </span>
+              <h2>{listing.public_fields.product?.value}</h2>
             </div>
             <span className="data-tag public">Public</span>
           </div>
@@ -422,21 +532,9 @@ export function BuyerDetail({ role, onBack }) {
             and Discovery AI.
           </p>
           <div className="public-field-grid">
-            <PreviewField label="Product" value="Robusta Coffee Grade 1" />
-            <PreviewField label="Quantity" value="20 Tons" />
-            <PreviewField label="Minimum order" value="10 Tons" />
-            <PreviewField label="Validity date" value="Nov 30, 2026" />
-            <PreviewField label="Grade" value="Screen 18" />
-            <PreviewField label="Origin" value="Dak Lak, Vietnam" />
-            <PreviewField label="Port of loading" value="Cat Lai, HCMC" />
-            <PreviewField label="Packaging" value="60 kg jute bags" />
-          </div>
-          <div className="public-description">
-            <span>Public description</span>
-            <p>
-              Sustainably sourced Robusta coffee from family farms in Dak Lak,
-              prepared for export with full lot traceability.
-            </p>
+            {Object.entries(listing.public_fields).map(([key, f]) => (
+              <PreviewField key={key} label={f.label} value={fmtField(f)} />
+            ))}
           </div>
         </section>
 
@@ -472,11 +570,12 @@ export function BuyerDetail({ role, onBack }) {
                   onChange={(event) => setNote(event.target.value)}
                 />
               </label>
-              <Button kind="secondary" onClick={() => setRecommended(true)}>
+              <Button kind="secondary" onClick={recommend}>
                 Recommend to Manager <Icon name="arrow" size={16} />
               </Button>
             </>
           )}
+          <ErrorNote error={error} />
           <div className="action-assurance">
             <Icon name="shield" size={15} />
             <span>
@@ -487,35 +586,39 @@ export function BuyerDetail({ role, onBack }) {
         </aside>
       </div>
       <ConnectionDrawer
+        listing={listing}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
     </main>
   );
 }
+
 export function BuyerRecommendations() {
-  const [empty, setEmpty] = useState(false);
-  const [handled, setHandled] = useState([]);
-  const recommendations = [
-    {
-      id: "LST-VN-0161",
-      product: "Robusta Coffee Grade 1",
-      seller: "Mekong Agro Export",
-      quantity: "20 Tons",
-      staff: "Sokha Lim",
-      time: "18 minutes ago",
-      note: "Strong quantity and delivery match. Please review supplier verification before connecting.",
-    },
-    {
-      id: "LST-VN-0154",
-      product: "Robusta Coffee Screen 18",
-      seller: "Dak Lak Cooperative",
-      quantity: "35 Tons",
-      staff: "Dara Chhim",
-      time: "Yesterday, 16:42",
-      note: "Alternative supplier with a larger lot. Delivery date needs confirmation.",
-    },
-  ].filter((item) => !handled.includes(item.id));
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const {
+    data,
+    error: loadError,
+    loading,
+    reload,
+  } = useApi(() => api.proposals(), [], 5000);
+  const recommendations = (data ?? []).filter((p) => p.status === "pending");
+
+  const act = async (item, action) => {
+    setBusy(item.id);
+    setError(null);
+    try {
+      if (action === "send") await api.sendProposal(item.id, item.note);
+      else await api.dismissProposal(item.id);
+      await reload(true);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <main className="page workspace-page recommendations-page">
       <div className="workspace-heading">
@@ -527,26 +630,15 @@ export function BuyerRecommendations() {
             results.
           </p>
         </div>
-        <div className="state-switcher">
-          <span>Preview</span>
-          <button
-            className={!empty ? "active" : ""}
-            type="button"
-            onClick={() => setEmpty(false)}
-          >
-            Queue
-          </button>
-          <button
-            className={empty ? "active" : ""}
-            type="button"
-            onClick={() => setEmpty(true)}
-          >
-            Empty
-          </button>
-        </div>
       </div>
+      <ErrorNote error={error} />
+      <ApiStatus
+        loading={loading && !data}
+        error={loadError}
+        onRetry={reload}
+      />
 
-      {empty || recommendations.length === 0 ? (
+      {data && recommendations.length === 0 ? (
         <section className="recommendations-empty">
           <span>
             <Icon name="check" size={22} />
@@ -559,15 +651,13 @@ export function BuyerRecommendations() {
           {recommendations.map((item) => (
             <article className="recommendation-item" key={item.id}>
               <div className="recommendation-meta">
-                <span className="member-avatar">
-                  {item.staff
-                    .split(" ")
-                    .map((word) => word[0])
-                    .join("")}
-                </span>
+                <span className="member-avatar">{initials(item.by_name)}</span>
                 <span>
-                  <strong>{item.staff}</strong>
-                  <small>{item.time}</small>
+                  <strong>{item.by_name}</strong>
+                  <small>
+                    {fmtDate(item.created_at.slice(0, 10))} ·{" "}
+                    {fmtTime(item.created_at)}
+                  </small>
                 </span>
               </div>
               <div className="recommendation-note">
@@ -575,19 +665,24 @@ export function BuyerRecommendations() {
                 <p>“{item.note}”</p>
               </div>
               <div className="recommendation-listing">
-                <span>{item.id}</span>
-                <strong>{item.product}</strong>
+                <span>{item.listing_id}</span>
+                <strong>{item.listing?.public_fields.product?.value}</strong>
                 <small>
-                  {item.seller} · {item.quantity}
+                  {item.listing?.seller.name} ·{" "}
+                  {fmtField(item.listing?.public_fields.quantity)}
                 </small>
               </div>
               <div className="recommendation-actions">
-                <Button onClick={() => setHandled([...handled, item.id])}>
+                <Button
+                  disabled={busy === item.id}
+                  onClick={() => act(item, "send")}
+                >
                   Send Connection Request
                 </Button>
                 <button
                   type="button"
-                  onClick={() => setHandled([...handled, item.id])}
+                  disabled={busy === item.id}
+                  onClick={() => act(item, "dismiss")}
                 >
                   Dismiss
                 </button>
@@ -599,55 +694,33 @@ export function BuyerRecommendations() {
     </main>
   );
 }
-export const buyerRequests = [
-  {
-    id: "REQ-0842",
-    seller: "Mekong Agro Export",
-    listing: "LST-VN-0161 · Robusta Coffee 20 Tons",
-    status: "Pending",
-    detail: "5d 18h left",
-  },
-  {
-    id: "REQ-0834",
-    seller: "Dak Lak Cooperative",
-    listing: "LST-VN-0154 · Robusta Coffee 35 Tons",
-    status: "Accepted",
-    detail: "DR-0402",
-  },
-  {
-    id: "REQ-0819",
-    seller: "Highland Origin Co.",
-    listing: "LST-VN-0147 · Arabica Coffee 12 Tons",
-    status: "Declined",
-    detail: "Jun 14",
-    reason: "Requested inventory has already been allocated.",
-  },
-  {
-    id: "REQ-0798",
-    seller: "Saigon Pepper Co.",
-    listing: "LST-VN-0131 · Black Pepper 10 Tons",
-    status: "Expired",
-    detail: "Expired Jun 10",
-  },
-  {
-    id: "REQ-0761",
-    seller: "Delta Rice Export",
-    listing: "LST-VN-0108 · White Rice 50 Tons",
-    status: "Withdrawn",
-    detail: "Withdrawn Jun 6",
-  },
-];
+
 export function BuyerConnectionInbox({ role, onEnterRoom }) {
   const manager = role === "BM";
   const [filter, setFilter] = useState("All");
-  const [withdrawn, setWithdrawn] = useState([]);
-  const requests = buyerRequests
-    .map((request) =>
-      withdrawn.includes(request.id)
-        ? { ...request, status: "Withdrawn" }
-        : request,
-    )
-    .filter((request) => filter === "All" || request.status === filter);
+  const [error, setError] = useState(null);
+  const {
+    data,
+    error: loadError,
+    loading,
+    reload,
+  } = useApi(() => api.connections("sent"), [], 5000);
+  const all = data ?? [];
+  const requests = all.filter(
+    (r) => filter === "All" || REQUEST_STATUS[r.status] === filter,
+  );
+  const count = (s) => all.filter((r) => r.status === s).length;
+
+  const withdraw = async (id) => {
+    setError(null);
+    try {
+      await api.withdrawConnection(id);
+      await reload(true);
+    } catch (e) {
+      setError(e);
+    }
+  };
+
   return (
     <main className="page workspace-page connection-page">
       <div className="workspace-heading connection-heading">
@@ -665,75 +738,89 @@ export function BuyerConnectionInbox({ role, onEnterRoom }) {
 
       <div className="buyer-inbox-summary">
         <div>
-          <strong>1</strong>
+          <strong>{count("pending")}</strong>
           <span>Pending</span>
         </div>
         <div>
-          <strong>1</strong>
+          <strong>{count("accepted")}</strong>
           <span>Active Deal Room</span>
         </div>
         <div>
-          <strong>5</strong>
+          <strong>{all.length}</strong>
           <span>Total requests</span>
         </div>
         <div className="status-filters">
           <FilterSelect
             value={filter}
-            options={[
-              "All",
-              "Pending",
-              "Accepted",
-              "Declined",
-              "Expired",
-              "Withdrawn",
-            ]}
+            options={["All", ...Object.values(REQUEST_STATUS)]}
             onChange={setFilter}
           />
         </div>
       </div>
+      <ErrorNote error={error} />
+      <ApiStatus
+        loading={loading && !data}
+        error={loadError}
+        onRetry={reload}
+      />
+
+      {data && requests.length === 0 && (
+        <section className="inbox-empty">
+          <Icon name="mail" size={22} />
+          <h2>No requests yet</h2>
+          <p>Use Discovery to find a seller and send a connection request.</p>
+        </section>
+      )}
 
       <section className="buyer-request-list">
         {requests.map((request) => (
           <article className="buyer-request-item" key={request.id}>
             <div className="request-identity">
               <span className="member-avatar">
-                {request.seller.slice(0, 2).toUpperCase()}
+                {request.seller_org.slice(0, 2).toUpperCase()}
               </span>
               <span>
-                <strong>{request.seller}</strong>
-                <small>{request.id} · Sent by Phnom Penh Imports</small>
+                <strong>{request.seller_org}</strong>
+                <small>
+                  {request.id} · Sent by {request.buyer_org}
+                </small>
               </span>
             </div>
             <div className="buyer-request-listing">
               <span>Public listing</span>
-              <strong>{request.listing}</strong>
+              <strong>
+                {request.listing_id} · {request.listing_snapshot.product?.value}{" "}
+                {fmtField(request.listing_snapshot.quantity)}
+              </strong>
             </div>
             <div>
               <ConnectionStatusBadge
-                status={request.status}
-                detail={request.detail}
+                status={REQUEST_STATUS[request.status]}
+                detail={
+                  request.status === "pending"
+                    ? timeLeft(request.expires_at)
+                    : (request.room_id ?? undefined)
+                }
               />
               {request.reason && (
                 <p className="decline-reason">“{request.reason}”</p>
               )}
             </div>
             <div className="buyer-request-actions">
-              {request.status === "Accepted" && (
-                <Button kind="secondary" onClick={onEnterRoom}>
-                  Enter Deal Room DR-0402
+              {request.room_id && (
+                <Button
+                  kind="secondary"
+                  onClick={() => onEnterRoom(request.room_id)}
+                >
+                  Enter Deal Room {request.room_id}
                 </Button>
               )}
-              {manager && request.status === "Pending" && (
-                <button
-                  type="button"
-                  onClick={() => setWithdrawn([...withdrawn, request.id])}
-                >
+              {manager && request.can_withdraw && (
+                <button type="button" onClick={() => withdraw(request.id)}>
                   Withdraw Request
                 </button>
               )}
-              {!manager && request.status !== "Accepted" && (
-                <span>Read-only status</span>
-              )}
+              {!manager && !request.room_id && <span>Read-only status</span>}
             </div>
           </article>
         ))}

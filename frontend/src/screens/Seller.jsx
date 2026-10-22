@@ -1,16 +1,62 @@
 import { useState } from "react";
+import { api } from "../api";
+import { useApi } from "../hooks";
+import {
+  capitalize,
+  fmtDate,
+  fmtField,
+  fmtTime,
+  fmtValue,
+  REQUEST_STATUS,
+  timeLeft,
+  title,
+} from "../format";
 import {
   Icon,
   Button,
-  listings,
   FlowSteps,
   Toggle,
   ConnectionStatusBadge,
   FilterSelect,
+  ApiStatus,
+  ErrorNote,
 } from "../shared";
+
+const STATUS_LABEL = {
+  published: "Published",
+  draft: "Draft",
+  paused: "Paused",
+  expired: "Expired",
+};
+// Lifecycle action offered on each listing card (§6)
+const NEXT_ACTION = {
+  draft: ["Publish", "publishListing"],
+  published: ["Pause", "pauseListing"],
+  paused: ["Resume", "resumeListing"],
+};
+
 export function SellerWorkspace({ role, onCreate }) {
   const [tab, setTab] = useState("listings");
-  const manager = role === "SM";
+  const [busy, setBusy] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const { data, error, loading, reload } = useApi(() => api.myListings());
+  const manager = role === "SM" && data?.can_manage !== false;
+  const listings = data?.listings ?? [];
+
+  const runAction = async (listing) => {
+    const [, fn] = NEXT_ACTION[listing.status];
+    setBusy(listing.id);
+    setActionError(null);
+    try {
+      await api[fn](listing.id);
+      await reload(true);
+    } catch (e) {
+      setActionError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <main className="page workspace-page">
       <div className="workspace-heading">
@@ -33,7 +79,7 @@ export function SellerWorkspace({ role, onCreate }) {
             type="button"
             onClick={() => setTab("listings")}
           >
-            Active & drafts <span>4</span>
+            Active & drafts <span>{listings.length}</span>
           </button>
           <button
             aria-selected={tab === "matches"}
@@ -58,51 +104,70 @@ export function SellerWorkspace({ role, onCreate }) {
           Staff view · Public listing fields are read-only
         </div>
       )}
+      <ErrorNote error={actionError} />
 
       {tab === "listings" ? (
-        <section className="listing-grid">
-          {listings.map((listing) => (
-            <article className="listing-card" key={listing.id}>
-              <div className="listing-card-head">
-                <span className="listing-id">
-                  {listing.id} · {listing.version}
-                </span>
-                <span
-                  className={`listing-status ${listing.status.toLowerCase()}`}
-                >
-                  {listing.status}
-                </span>
-              </div>
-              <h2>{listing.title}</h2>
-              <div className="public-label">
-                <Icon name="shield" size={13} /> Public
-              </div>
-              <div className="listing-facts">
-                <div>
-                  <span>Product</span>
-                  <strong>{listing.category}</strong>
-                </div>
-                <div>
-                  <span>Quantity</span>
-                  <strong>{listing.quantity}</strong>
-                </div>
-                <div>
-                  <span>Valid until</span>
-                  <strong>{listing.validity}</strong>
-                </div>
-              </div>
-              <div className="listing-foot">
-                <span>{listing.interest}</span>
-                {manager && (
-                  <button type="button">
-                    {listing.status === "Draft" ? "Edit" : "Edit / Pause"}{" "}
-                    <Icon name="arrow" size={14} />
-                  </button>
-                )}
-              </div>
-            </article>
-          ))}
-        </section>
+        <>
+          <ApiStatus loading={loading} error={error} onRetry={reload} />
+          {data && (
+            <section className="listing-grid">
+              {listings.map((listing) => {
+                const action = NEXT_ACTION[listing.status];
+                return (
+                  <article className="listing-card" key={listing.id}>
+                    <div className="listing-card-head">
+                      <span className="listing-id">
+                        {listing.id} · {listing.version_label}
+                      </span>
+                      <span className={`listing-status ${listing.status}`}>
+                        {STATUS_LABEL[listing.status]}
+                      </span>
+                    </div>
+                    <h2>{title(listing)}</h2>
+                    <div className="public-label">
+                      <Icon name="shield" size={13} /> Public
+                    </div>
+                    <div className="listing-facts">
+                      <div>
+                        <span>Product</span>
+                        <strong>{capitalize(listing.product_type)}</strong>
+                      </div>
+                      <div>
+                        <span>Quantity</span>
+                        <strong>
+                          {fmtField(listing.public_fields.quantity)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Valid until</span>
+                        <strong>{fmtDate(listing.valid_until)}</strong>
+                      </div>
+                    </div>
+                    <div className="listing-foot">
+                      <span>
+                        {listing.status === "published"
+                          ? `${listing.open_rooms} active room${listing.open_rooms === 1 ? "" : "s"}`
+                          : listing.status === "draft"
+                            ? "Not visible yet"
+                            : "Hidden from search"}
+                      </span>
+                      {manager && action && (
+                        <button
+                          type="button"
+                          disabled={busy === listing.id}
+                          onClick={() => runAction(listing)}
+                        >
+                          {busy === listing.id ? "Saving…" : action[0]}{" "}
+                          <Icon name="arrow" size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          )}
+        </>
       ) : (
         <section className="ai-matches">
           <span className="ai-symbol">
@@ -116,16 +181,73 @@ export function SellerWorkspace({ role, onCreate }) {
               Confidential files and private snapshots are never read by AI.
             </p>
           </div>
-          <span className="tag verified">8 positive matches</span>
+          <span className="tag unverified">Coming in T/H2</span>
         </section>
       )}
     </main>
   );
 }
-export function ListingUpload({ onContinue, onNavigate }) {
-  const [category, setCategory] = useState("Coffee");
-  const [policy, setPolicy] = useState("ready");
-  const [uploaded, setUploaded] = useState(false);
+
+const CATEGORIES = [
+  ["Coffee", "coffee_green_v3"],
+  ["Black Pepper", "pepper_black_v1"],
+  ["Cashew", "cashew_raw_v1"],
+  ["Rice", "rice_white_v1"],
+];
+const DEMO_FILES = [
+  ["valid", "Valid file"],
+  ["missing_moq", "Missing MOQ"],
+  ["extra_column", "Extra column"],
+];
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function ListingUpload({ draft, onUploaded, onContinue, onNavigate }) {
+  const [templateId, setTemplateId] = useState("coffee_green_v3");
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null);
+  const [file, setFile] = useState(null);
+  const { data: templates } = useApi(() => api.templates());
+  const template = templates?.find((t) => t.id === templateId);
+  const snapshot = draft?.snapshot;
+
+  const upload = async (f) => {
+    if (!f) return;
+    setFile(f);
+    setUploading(true);
+    setError(null);
+    try {
+      onUploaded(await api.uploadFile(templateId, f));
+    } catch (e) {
+      setError(e);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const uploadDemo = async (variant) => {
+    const content = await api.sampleFile(templateId, variant);
+    const blob = new Blob([JSON.stringify(content, null, 2)], {
+      type: "application/json",
+    });
+    upload(new File([blob], `${templateId}_${variant}.json`));
+  };
+
+  const download = async () => {
+    const json = await api.templateFile(templateId);
+    saveBlob(
+      new Blob([JSON.stringify(json, null, 2)], { type: "application/json" }),
+      `${templateId}.json`,
+    );
+  };
+
   return (
     <main className="page creation-page">
       <div className="creation-heading">
@@ -149,42 +271,42 @@ export function ListingUpload({ onContinue, onNavigate }) {
             your product.
           </p>
           <div className="category-grid">
-            {["Coffee", "Black Pepper", "Cashew", "Rice"].map((item) => (
+            {CATEGORIES.map(([label, id]) => (
               <button
-                className={category === item ? "selected" : ""}
-                key={item}
+                className={templateId === id ? "selected" : ""}
+                key={id}
                 type="button"
-                onClick={() => setCategory(item)}
+                onClick={() => setTemplateId(id)}
               >
                 <span className="choice-check">
-                  {category === item && <Icon name="check" size={13} />}
+                  {templateId === id && <Icon name="check" size={13} />}
                 </span>
-                {item}
+                {label}
               </button>
             ))}
           </div>
-          <button className="download-action" type="button">
+          <button className="download-action" type="button" onClick={download}>
             <Icon name="file" size={17} />
             <span>
               Download Fixed Template
-              <small>.xlsx / .json</small>
+              <small>
+                {template ? `${template.label} v${template.version}` : ".json"}
+              </small>
             </span>
             <Icon name="arrow" size={15} />
           </button>
           <div className="required-list">
             <span>Required fields</span>
-            <div>
-              <Icon name="check" size={13} /> Product name
-            </div>
-            <div>
-              <Icon name="check" size={13} /> Quantity & unit
-            </div>
-            <div>
-              <Icon name="check" size={13} /> MOQ
-            </div>
-            <div>
-              <Icon name="check" size={13} /> Validity date
-            </div>
+            {(template?.fields ?? [])
+              .filter((f) => f.required)
+              .map((f) => (
+                <div key={f.key}>
+                  <Icon name="check" size={13} /> {f.label}
+                  {f.unit_options.length > 0 &&
+                    f.type === "number" &&
+                    " & unit"}
+                </div>
+              ))}
           </div>
         </section>
 
@@ -196,29 +318,31 @@ export function ListingUpload({ onContinue, onNavigate }) {
             buyers.
           </p>
           <label
-            className={`drop-zone ${uploaded ? "uploaded" : ""}`}
+            className={`drop-zone ${snapshot && !error ? "uploaded" : ""}`}
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              setUploaded(true);
+              upload(event.dataTransfer.files?.[0]);
             }}
           >
             <input
               type="file"
               accept=".xlsx,.json"
-              onChange={() => setUploaded(true)}
+              onChange={(event) => upload(event.target.files?.[0])}
             />
             <span className="upload-icon">
-              <Icon name={uploaded ? "check" : "file"} size={24} />
+              <Icon name={snapshot && !error ? "check" : "file"} size={24} />
             </span>
             <strong>
-              {uploaded
-                ? "seller_coffee_nov26.xlsx"
-                : "Drop your completed template here"}
+              {uploading
+                ? "Validating…"
+                : file
+                  ? file.name
+                  : "Drop your completed template here"}
             </strong>
             <span>
-              {uploaded
-                ? "Validated · 34 KB"
+              {snapshot && !error && file
+                ? `Validated · ${Math.max(1, Math.round(file.size / 1024))} KB · ${snapshot.fields.length} fields`
                 : "or choose a .xlsx / .json file · Max 1 MB"}
             </span>
           </label>
@@ -231,47 +355,38 @@ export function ListingUpload({ onContinue, onNavigate }) {
             </span>
           </div>
           <div className="policy-preview">
-            <span>Preview policy check</span>
+            <span>Demo files</span>
             <div>
-              <button
-                className={policy === "ready" ? "active" : ""}
-                type="button"
-                onClick={() => setPolicy("ready")}
-              >
-                Ready
-              </button>
-              <button
-                className={policy === "error" ? "active" : ""}
-                type="button"
-                onClick={() => setPolicy("error")}
-              >
-                Error
-              </button>
-              <button
-                className={policy === "ignored" ? "active" : ""}
-                type="button"
-                onClick={() => setPolicy("ignored")}
-              >
-                Ignored fields
-              </button>
+              {DEMO_FILES.map(([variant, label]) => (
+                <button
+                  key={variant}
+                  type="button"
+                  disabled={uploading}
+                  onClick={() => uploadDemo(variant)}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
-          {policy === "error" && (
+          {error && (
             <div className="policy-block error">
               <Icon name="close" size={18} />
               <span>
                 <strong>Validation Error</strong>
-                Missing required field: MOQ (Row 4) or Invalid unit. Please
-                download the template to compare.
+                {(error.details?.errors ?? [{ message: error.message }])
+                  .map((e) => e.message)
+                  .join(" ")}
               </span>
             </div>
           )}
-          {policy === "ignored" && (
+          {!error && snapshot?.dropped_columns.length > 0 && (
             <div className="policy-block notice">
               <Icon name="file" size={18} />
               <span>
                 <strong>Ignored Fields</strong>
-                Unrecognized fields ignored: [Internal_Warehouse_Note].
+                Unrecognized fields ignored: [
+                {snapshot.dropped_columns.join(", ")}].
               </span>
             </div>
           )}
@@ -281,100 +396,53 @@ export function ListingUpload({ onContinue, onNavigate }) {
         <span>
           <Icon name="lock" size={14} /> Private Snapshot
         </span>
-        <Button onClick={onContinue}>
+        <Button onClick={onContinue} disabled={!snapshot || !!error}>
           Review parsed fields <Icon name="arrow" size={16} />
         </Button>
       </div>
     </main>
   );
 }
-export const parsedRows = [
-  {
-    name: "Product",
-    value: "Robusta Coffee Grade 1",
-    unit: "—",
-    tag: "Standard",
-    locked: true,
-  },
-  {
-    name: "Quantity",
-    value: "20",
-    unit: "Tons",
-    tag: "Standard",
-    locked: true,
-  },
-  {
-    name: "Validity Date",
-    value: "Nov 30, 2026",
-    unit: "—",
-    tag: "Standard",
-    locked: true,
-  },
-  { name: "Grade", value: "Screen 18", unit: "—", tag: "Standard" },
-  {
-    name: "Port of Loading",
-    value: "Cat Lai, HCMC",
-    unit: "—",
-    tag: "Standard",
-  },
-  {
-    name: "Floor Price",
-    value: "$3,850",
-    unit: "/ ton",
-    tag: "Confidential · Encrypted",
-    sensitive: true,
-  },
-  {
-    name: "Cost Price",
-    value: "$3,600",
-    unit: "/ ton",
-    tag: "Confidential · Encrypted",
-    sensitive: true,
-  },
-  {
-    name: "Farmer Household List",
-    value: "124 households",
-    unit: "—",
-    tag: "Confidential · Encrypted",
-    sensitive: true,
-  },
-  {
-    name: "Farmer Personal ID",
-    value: "124 records",
-    unit: "—",
-    tag: "Confidential · Encrypted",
-    blocked: true,
-  },
-];
-export function ListingFields({ onContinue, onNavigate }) {
-  const [publicFields, setPublicFields] = useState([
-    "Product",
-    "Quantity",
-    "Validity Date",
-    "Grade",
-    "Port of Loading",
-  ]);
-  const [warning, setWarning] = useState(null);
-  const requestToggle = (name, blocked) => {
-    if (blocked) {
-      setWarning("blocked");
-      return;
-    }
-    if (name === "Floor Price" && !publicFields.includes(name)) {
-      setWarning("floor");
-      return;
-    }
-    setPublicFields((fields) =>
-      fields.includes(name)
-        ? fields.filter((field) => field !== name)
-        : [...fields, name],
+
+const TAG_LABEL = {
+  standard: "Standard",
+  required: "Required",
+  sensitive: "Confidential · Encrypted",
+  blocked: "Blocked by policy",
+};
+
+export function ListingFields({ draft, onChange, onContinue, onNavigate }) {
+  const [warning, setWarning] = useState(null); // { type, field }
+  if (!draft) return <NoDraft onNavigate={onNavigate} />;
+  const { snapshot, publicKeys, confirmed } = draft;
+
+  const setKeys = (keys, extraConfirmed = []) =>
+    onChange({
+      ...draft,
+      publicKeys: keys,
+      confirmed: [...new Set([...confirmed, ...extraConfirmed])],
+    });
+
+  const requestToggle = (row) => {
+    if (row.blocked) return setWarning({ type: "blocked", field: row });
+    const on = publicKeys.includes(row.key);
+    if (!on && row.sensitive)
+      return setWarning({ type: "sensitive", field: row });
+    setKeys(
+      on ? publicKeys.filter((k) => k !== row.key) : [...publicKeys, row.key],
     );
   };
+  const publicCount = snapshot.fields.filter(
+    (r) => r.locked_public || publicKeys.includes(r.key),
+  ).length;
+
   return (
     <main className="page creation-page fields-page">
       <div className="creation-heading">
         <div>
-          <p className="eyebrow">Private snapshot</p>
+          <p className="eyebrow">
+            Private snapshot · {snapshot.template_label}
+          </p>
           <h1>Choose what becomes public.</h1>
           <p>
             Private by default. Only selected fields can be used by buyers and
@@ -384,20 +452,20 @@ export function ListingFields({ onContinue, onNavigate }) {
         <FlowSteps current={2} onNavigate={onNavigate} />
       </div>
 
-      {warning === "floor" && (
+      {warning?.type === "sensitive" && (
         <div className="sensitive-warning">
           <Icon name="shield" size={20} />
           <span>
             <strong>Sensitive data warning</strong>
-            Making Floor Price public exposes it to all buyers and Discovery AI.
-            Confirm?
+            Making {warning.field.label} public exposes it to all buyers and
+            Discovery AI. Confirm?
           </span>
           <button type="button" onClick={() => setWarning(null)}>
             Keep private
           </button>
           <Button
             onClick={() => {
-              setPublicFields((fields) => [...fields, "Floor Price"]);
+              setKeys([...publicKeys, warning.field.key], [warning.field.key]);
               setWarning(null);
             }}
           >
@@ -405,12 +473,13 @@ export function ListingFields({ onContinue, onNavigate }) {
           </Button>
         </div>
       )}
-      {warning === "blocked" && (
+      {warning?.type === "blocked" && (
         <div className="sensitive-warning blocked-warning">
           <Icon name="lock" size={20} />
           <span>
             <strong>Protected by policy</strong>
-            This field cannot be made public under platform privacy policy.
+            {warning.field.label} cannot be made public under platform privacy
+            policy.
           </span>
           <button type="button" onClick={() => setWarning(null)}>
             Dismiss
@@ -426,34 +495,34 @@ export function ListingFields({ onContinue, onNavigate }) {
           <span>Sensitivity tag</span>
           <span>Visibility</span>
         </div>
-        {parsedRows.map((row) => {
-          const isPublic = row.locked || publicFields.includes(row.name);
+        {snapshot.fields.map((row) => {
+          const isPublic = row.locked_public || publicKeys.includes(row.key);
           return (
-            <div className="parsed-row" key={row.name}>
+            <div className="parsed-row" key={row.key}>
               <span className="parsed-name">
-                {row.name}
-                {row.locked && (
+                {row.label}
+                {row.locked_public && (
                   <small>
                     <Icon name="lock" size={11} /> Minimum field
                   </small>
                 )}
               </span>
-              <strong>{row.value}</strong>
-              <span>{row.unit}</span>
+              <strong>{fmtValue(row.value)}</strong>
+              <span>{row.unit ?? "—"}</span>
               <span>
                 <span
                   className={`data-tag ${row.sensitive || row.blocked ? "confidential" : "standard"}`}
                 >
-                  {row.tag}
+                  {TAG_LABEL[row.tag]}
                 </span>
               </span>
               <span className="visibility-control">
                 <span>{isPublic ? "Public" : "Private"}</span>
                 <Toggle
                   checked={isPublic}
-                  locked={row.locked}
-                  label={`${row.name} ${isPublic ? "public" : "private"}`}
-                  onChange={() => requestToggle(row.name, row.blocked)}
+                  locked={row.locked_public}
+                  label={`${row.label} ${isPublic ? "public" : "private"}`}
+                  onChange={() => requestToggle(row)}
                 />
               </span>
             </div>
@@ -462,7 +531,8 @@ export function ListingFields({ onContinue, onNavigate }) {
       </section>
       <div className="creation-actions">
         <span>
-          <Icon name="shield" size={14} /> 5 public · 4 private
+          <Icon name="shield" size={14} /> {publicCount} public ·{" "}
+          {snapshot.fields.length - publicCount} private
         </span>
         <Button onClick={onContinue}>
           Preview listing <Icon name="arrow" size={16} />
@@ -471,6 +541,22 @@ export function ListingFields({ onContinue, onNavigate }) {
     </main>
   );
 }
+
+function NoDraft({ onNavigate }) {
+  return (
+    <main className="page creation-page">
+      <section className="inbox-empty">
+        <Icon name="file" size={22} />
+        <h2>Upload a confidential file first</h2>
+        <p>The private snapshot is created from your uploaded template.</p>
+        <Button onClick={() => onNavigate("listing-upload")}>
+          Go to upload
+        </Button>
+      </section>
+    </main>
+  );
+}
+
 export function PreviewField({ label, value }) {
   return (
     <div className="preview-field">
@@ -479,8 +565,34 @@ export function PreviewField({ label, value }) {
     </div>
   );
 }
-export function ListingPublish({ onNavigate }) {
-  const [published, setPublished] = useState(false);
+
+export function ListingPublish({ draft, onNavigate, onDone }) {
+  const [result, setResult] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const body = draft && {
+    snapshot_id: draft.snapshot.id,
+    public_keys: draft.publicKeys,
+    confirm_sensitive: draft.confirmed,
+  };
+  const preview = useApi(
+    () => (body ? api.previewListing(body) : Promise.resolve(null)),
+    [draft],
+  );
+  if (!draft) return <NoDraft onNavigate={onNavigate} />;
+
+  const save = async (publish) => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      setResult(await api.createListing({ ...body, publish }));
+    } catch (e) {
+      setSaveError(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <main className="page creation-page publish-page">
       <div className="creation-heading">
@@ -495,36 +607,26 @@ export function ListingPublish({ onNavigate }) {
         <FlowSteps current={3} onNavigate={onNavigate} />
       </div>
 
-      <div className="publish-state">
-        <span>Preview state</span>
-        <button
-          className={!published ? "active" : ""}
-          type="button"
-          onClick={() => setPublished(false)}
-        >
-          Draft
-        </button>
-        <button
-          className={published ? "active" : ""}
-          type="button"
-          onClick={() => setPublished(true)}
-        >
-          Published v2
-        </button>
-      </div>
-
-      {published && (
+      {result && (
         <div className="version-banner">
           <span className="version-check">
             <Icon name="check" size={16} />
           </span>
           <span>
-            <strong>Listing updated to v2</strong>
-            Active Deal Rooms have been notified with a field diff.
+            <strong>
+              {result.id} {result.version_label}{" "}
+              {result.status === "published" ? "published" : "saved as draft"}
+            </strong>
+            {result.status === "published"
+              ? "Buyers and Discovery AI can now find the public fields."
+              : "Not visible to buyers until you publish it."}
           </span>
-          <span className="tag verified">Contract · Versioned</span>
+          <Button kind="secondary" onClick={onDone}>
+            Back to listings
+          </Button>
         </div>
       )}
+      <ErrorNote error={saveError || preview.error} />
 
       <section className="preview-split">
         <div className="preview-column public-preview">
@@ -539,11 +641,13 @@ export function ListingPublish({ onNavigate }) {
           </div>
           <p>Searchable information used for trusted buyer matching.</p>
           <div className="preview-fields">
-            <PreviewField label="Product" value="Robusta Coffee Grade 1" />
-            <PreviewField label="Quantity" value="20 Tons" />
-            <PreviewField label="Validity" value="Nov 30, 2026" />
-            <PreviewField label="Grade" value="Screen 18" />
-            <PreviewField label="Port of Loading" value="Cat Lai, HCMC" />
+            {preview.data?.public.map((f) => (
+              <PreviewField
+                key={f.key}
+                label={f.label}
+                value={fmtValue(f.value, f.unit)}
+              />
+            ))}
           </div>
         </div>
         <div className="preview-column private-preview">
@@ -561,9 +665,16 @@ export function ListingPublish({ onNavigate }) {
             Room.
           </p>
           <div className="preview-fields">
-            <PreviewField label="Floor Price" value="$3,850 / ton" />
-            <PreviewField label="Cost Price" value="$3,600 / ton" />
-            <PreviewField label="Supplier Households" value="124 households" />
+            {preview.data?.private.map((f) => {
+              const row = draft.snapshot.fields.find((r) => r.key === f.key);
+              return (
+                <PreviewField
+                  key={f.key}
+                  label={f.label}
+                  value={fmtValue(row?.value, row?.unit)}
+                />
+              );
+            })}
           </div>
           <div className="private-assurance">
             <Icon name="shield" size={16} />
@@ -576,42 +687,77 @@ export function ListingPublish({ onNavigate }) {
           <Icon name="lock" size={14} /> Confidential source retained as Private
           Snapshot
         </span>
-        <div>
-          <Button kind="ghost">Save Draft</Button>
-          <Button onClick={() => setPublished(true)}>
-            {published ? "Published v2" : "Publish Listing"}{" "}
-            <Icon name="arrow" size={16} />
-          </Button>
-        </div>
+        {!result && (
+          <div>
+            <Button kind="ghost" disabled={saving} onClick={() => save(false)}>
+              Save Draft
+            </Button>
+            <Button disabled={saving} onClick={() => save(true)}>
+              {saving ? "Publishing…" : "Publish Listing"}{" "}
+              <Icon name="arrow" size={16} />
+            </Button>
+          </div>
+        )}
       </div>
     </main>
   );
 }
+
+const FILTERS = ["Pending", "Accepted", "Declined", "Expired", "Withdrawn"];
+
 export function SellerConnectionInbox({ role, onEnterRoom }) {
   const manager = role === "SM";
   const [tab, setTab] = useState("received");
-  const [filter, setFilter] = useState(manager ? "Pending" : "Accepted");
-  const [status, setStatus] = useState(manager ? "Pending" : "Accepted");
+  const [filter, setFilter] = useState("Pending");
+  const [selectedId, setSelectedId] = useState(null);
   const [processing, setProcessing] = useState(false);
-  const [roomActive, setRoomActive] = useState(!manager);
   const [declining, setDeclining] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
-  const acceptRequest = () => {
+  const [actionError, setActionError] = useState(null);
+  const [createdRoom, setCreatedRoom] = useState(null);
+
+  const list = useApi(
+    () => api.connections(tab, filter.toLowerCase()),
+    [tab, filter],
+    5000,
+  );
+  const requests = list.data ?? [];
+  const selected = requests.find((r) => r.id === selectedId) ?? requests[0];
+  const detail = useApi(
+    () => (selected ? api.connection(selected.id) : Promise.resolve(null)),
+    [selected?.id, selected?.status],
+  );
+  const req = detail.data;
+
+  const accept = async (confirmVersion) => {
     if (processing) return;
     setProcessing(true);
-    window.setTimeout(() => {
-      setProcessing(false);
-      setStatus("Accepted");
+    setActionError(null);
+    try {
+      const res = await api.acceptConnection(req.id, confirmVersion);
+      setCreatedRoom(res.room_id);
       setFilter("Accepted");
-      setRoomActive(true);
-    }, 850);
+    } catch (e) {
+      setActionError(e);
+    } finally {
+      setProcessing(false);
+    }
   };
-  const confirmDecline = () => {
-    setStatus("Declined");
-    setFilter("Declined");
-    setDeclining(false);
+  const confirmDecline = async () => {
+    setActionError(null);
+    try {
+      await api.declineConnection(req.id, declineReason || null);
+      setDeclining(false);
+      setFilter("Declined");
+    } catch (e) {
+      setActionError(e);
+    }
   };
-  const visible = tab === "received" && filter === status;
+
+  // Diff rows: from 409 details on accept, or from the request view
+  const changes = actionError?.details?.changes ?? req?.changes ?? [];
+  const confirmVersion = actionError?.details?.confirm_version;
+
   return (
     <main className="page workspace-page connection-page">
       <div className="workspace-heading connection-heading">
@@ -628,19 +774,18 @@ export function SellerConnectionInbox({ role, onEnterRoom }) {
         </span>
       </div>
 
-      {roomActive && (
+      {createdRoom && (
         <div className="deal-room-banner">
           <span>
             <Icon name="check" size={16} />
           </span>
           <div>
-            <strong>Deal Room DR-0402 Created</strong>
+            <strong>Deal Room {createdRoom} Created</strong>
             <small>
-              Angkor Bean Trading has been notified and the request snapshot is
-              preserved.
+              The buyer has been notified and the request snapshot is preserved.
             </small>
           </div>
-          <Button kind="secondary" onClick={onEnterRoom}>
+          <Button kind="secondary" onClick={() => onEnterRoom(createdRoom)}>
             Enter Deal Room
           </Button>
         </div>
@@ -653,7 +798,7 @@ export function SellerConnectionInbox({ role, onEnterRoom }) {
             type="button"
             onClick={() => setTab("received")}
           >
-            Received <span>1</span>
+            Received {tab === "received" && <span>{requests.length}</span>}
           </button>
           <button
             className={tab === "sent" ? "active" : ""}
@@ -664,106 +809,146 @@ export function SellerConnectionInbox({ role, onEnterRoom }) {
           </button>
         </div>
         <div className="status-filters">
-          <FilterSelect
-            value={filter}
-            options={[
-              "Pending",
-              "Accepted",
-              "Declined",
-              "Expired",
-              "Withdrawn",
-            ]}
-            onChange={setFilter}
-          />
+          <FilterSelect value={filter} options={FILTERS} onChange={setFilter} />
         </div>
       </div>
 
-      {visible ? (
+      <ApiStatus
+        loading={list.loading && !list.data}
+        error={list.error}
+        onRetry={list.reload}
+      />
+
+      {list.data && requests.length > 0 && req ? (
         <div className="seller-request-layout">
           <section className="request-list-card">
-            <div className="request-list-head">
-              <span className="member-avatar">AB</span>
-              <div>
-                <h2>Angkor Bean Trading</h2>
-                <p>Cambodia · Buyer organization</p>
-              </div>
-              <ConnectionStatusBadge
-                status={status}
-                detail={status === "Pending" ? "5d 18h left" : undefined}
-              />
-            </div>
+            {requests.map((r) => (
+              <button
+                type="button"
+                key={r.id}
+                className="request-list-head"
+                style={{
+                  width: "100%",
+                  border: 0,
+                  background: "none",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  opacity: r.id === req.id ? 1 : 0.6,
+                }}
+                onClick={() => {
+                  setSelectedId(r.id);
+                  setActionError(null);
+                  setDeclining(false);
+                }}
+              >
+                <span className="member-avatar">
+                  {r.buyer_org.slice(0, 2).toUpperCase()}
+                </span>
+                <div>
+                  <h2>{r.buyer_org}</h2>
+                  <p>
+                    {r.id} · {r.listing_id}
+                  </p>
+                </div>
+                <ConnectionStatusBadge
+                  status={REQUEST_STATUS[r.status]}
+                  detail={
+                    r.status === "pending"
+                      ? timeLeft(r.expires_at)
+                      : (r.room_id ?? undefined)
+                  }
+                />
+              </button>
+            ))}
             <div className="request-listing-ref">
               <span>Listing requested</span>
-              <strong>LST-VN-0161 · Robusta Coffee 20 Tons</strong>
-              <small>Snapshot at time of request · v1</small>
+              <strong>
+                {req.listing_id} · {req.listing_snapshot.product?.value} ·{" "}
+                {fmtField(req.listing_snapshot.quantity)}
+              </strong>
+              <small>
+                Snapshot at time of request · v{req.listing_version}
+              </small>
             </div>
             <div className="request-timestamp">
-              Received Jun 18, 2026 · 10:24 ICT
+              Received {fmtDate(req.created_at.slice(0, 10))} ·{" "}
+              {fmtTime(req.created_at)}
             </div>
           </section>
 
           <section className="request-detail">
             <div className="request-detail-head">
               <div>
-                <p className="eyebrow">Request detail</p>
-                <h2>Angkor Bean Trading · Cambodia</h2>
+                <p className="eyebrow">Request detail · {req.id}</p>
+                <h2>{req.buyer_org} · Cambodia</h2>
               </div>
               <span className="data-tag private">Private Snapshot</span>
             </div>
 
             <div className="buyer-message">
               <span>Buyer’s message</span>
-              <p>
-                “Hello, we are interested in discussing availability and
-                delivery to Phnom Penh before November 30. Please let us know if
-                the listed volume remains available.”
-              </p>
+              <p>“{req.message || "No message"}”</p>
             </div>
 
-            <div className="listing-change-warning">
-              <div className="change-warning-head">
-                <span>
-                  <Icon name="file" size={17} />
-                </span>
-                <div>
-                  <strong>Listing Changed After Request</strong>
-                  <p>
-                    LST-VN-0161 was updated to v2. Review the field diff before
-                    accepting.
-                  </p>
+            {changes.length > 0 && (
+              <div className="listing-change-warning">
+                <div className="change-warning-head">
+                  <span>
+                    <Icon name="file" size={17} />
+                  </span>
+                  <div>
+                    <strong>Listing Changed After Request</strong>
+                    <p>
+                      {req.listing_id} was updated to v
+                      {req.current_listing_version}. Review the field diff
+                      before accepting.
+                    </p>
+                  </div>
+                  <span className="tag unverified">
+                    v{req.listing_version} → v{req.current_listing_version}
+                  </span>
                 </div>
-                <span className="tag unverified">v1 → v2</span>
+                <div className="version-diff">
+                  <div className="diff-column old">
+                    <span>Snapshot requested · v{req.listing_version}</span>
+                    {changes.map((c) => (
+                      <div key={c.key}>
+                        <small>{c.label}</small>
+                        <strong>
+                          {c.before
+                            ? fmtValue(c.before.value, c.before.unit)
+                            : "Not public"}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="diff-arrow">
+                    <Icon name="arrow" size={17} />
+                  </div>
+                  <div className="diff-column new">
+                    <span>
+                      Current listing · v{req.current_listing_version}
+                    </span>
+                    {changes.map((c) => (
+                      <div key={c.key}>
+                        <small>{c.label}</small>
+                        <strong>
+                          {c.after
+                            ? fmtValue(c.after.value, c.after.unit)
+                            : "Not public"}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="version-diff">
-                <div className="diff-column old">
-                  <span>Snapshot requested · v1</span>
-                  <div>
-                    <small>Validity date</small>
-                    <strong>Nov 30, 2026</strong>
-                  </div>
-                  <div>
-                    <small>Port of loading</small>
-                    <strong>Cat Lai, HCMC</strong>
-                  </div>
-                </div>
-                <div className="diff-arrow">
-                  <Icon name="arrow" size={17} />
-                </div>
-                <div className="diff-column new">
-                  <span>Current listing · v2</span>
-                  <div>
-                    <small>Validity date</small>
-                    <strong>Dec 15, 2026</strong>
-                  </div>
-                  <div>
-                    <small>Port of loading</small>
-                    <strong>Cat Lai or Da Nang</strong>
-                  </div>
-                </div>
-              </div>
-            </div>
+            )}
 
-            {manager && status === "Pending" ? (
+            {actionError && !confirmVersion && (
+              <ErrorNote error={actionError} />
+            )}
+
+            {manager && req.status === "pending" ? (
               <div className="seller-request-actions">
                 {declining && (
                   <label className="field decline-field">
@@ -781,9 +966,20 @@ export function SellerConnectionInbox({ role, onEnterRoom }) {
                     className="button button-primary"
                     disabled={processing}
                     type="button"
-                    onClick={acceptRequest}
+                    onClick={() =>
+                      accept(
+                        confirmVersion ??
+                          (req.listing_changed
+                            ? req.current_listing_version
+                            : undefined),
+                      )
+                    }
                   >
-                    {processing ? "Processing..." : "Accept & Create Deal Room"}
+                    {processing
+                      ? "Processing..."
+                      : req.listing_changed
+                        ? `Accept v${req.current_listing_version} & Create Deal Room`
+                        : "Accept & Create Deal Room"}
                     {!processing && <Icon name="arrow" size={16} />}
                   </button>
                   {declining ? (
@@ -818,27 +1014,33 @@ export function SellerConnectionInbox({ role, onEnterRoom }) {
               <div className="staff-request-state">
                 <span>
                   <strong>Request status</strong>
-                  {roomActive
-                    ? "Accepted · Deal Room active"
-                    : `${status} · Awaiting Manager action`}
+                  {req.room_id
+                    ? `Accepted · Deal Room ${req.room_id} active`
+                    : req.status === "pending"
+                      ? "Pending · Awaiting Manager action"
+                      : `${REQUEST_STATUS[req.status]}${req.reason ? ` · “${req.reason}”` : ""}`}
                 </span>
-                {roomActive && (
-                  <Button onClick={onEnterRoom}>Enter Deal Room</Button>
+                {req.room_id && (
+                  <Button onClick={() => onEnterRoom(req.room_id)}>
+                    Enter Deal Room
+                  </Button>
                 )}
               </div>
             )}
           </section>
         </div>
       ) : (
-        <section className="inbox-empty">
-          <Icon name="mail" size={22} />
-          <h2>No {filter.toLowerCase()} requests</h2>
-          <p>
-            {tab === "sent"
-              ? "Your organization has not sent any seller connection requests."
-              : `There are no received requests with ${filter.toLowerCase()} status.`}
-          </p>
-        </section>
+        list.data && (
+          <section className="inbox-empty">
+            <Icon name="mail" size={22} />
+            <h2>No {filter.toLowerCase()} requests</h2>
+            <p>
+              {tab === "sent"
+                ? "Your organization has not sent any connection requests."
+                : `There are no received requests with ${filter.toLowerCase()} status.`}
+            </p>
+          </section>
+        )
       )}
     </main>
   );

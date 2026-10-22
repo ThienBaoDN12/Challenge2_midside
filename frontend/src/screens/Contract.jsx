@@ -1,27 +1,96 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { useApi } from "../hooks";
+import { fmtNumber, fmtValue } from "../format";
 import {
   Icon,
   Button,
   Field,
   SelectField,
-  Toggle,
   ConnectionStatusBadge,
   LegalDisclaimer,
-  FilterSelect,
+  ApiStatus,
+  ErrorNote,
 } from "../shared";
-export function ContractEditor({ onBack, onSent }) {
-  const [quantity, setQuantity] = useState("20");
-  const [unitPrice, setUnitPrice] = useState("2150");
-  const [versionTwo, setVersionTwo] = useState(false);
-  const [showPolicy, setShowPolicy] = useState(true);
-  const [fileName, setFileName] = useState("");
-  const [sent, setSent] = useState(false);
-  const total = (Number(quantity) || 0) * (Number(unitPrice) || 0);
-  const totalFormatted = total.toLocaleString("en-US");
-  const sendContract = () => {
-    setSent(true);
-    window.setTimeout(onSent, 900);
+
+const KG = { ton: 1000, kg: 1 };
+
+// Live preview only; the backend recomputes the total and rejects mismatches (FR-40)
+function previewTotal(terms) {
+  const q = terms.quantity;
+  const p = terms.unit_price;
+  if (!q?.value || !p?.value || !q.unit || !p.unit) return null;
+  const [currency, per] = p.unit.split("/");
+  const total = (Number(q.value) * KG[q.unit] * Number(p.value)) / KG[per];
+  return Number.isFinite(total)
+    ? `${fmtNumber(Math.round(total * 100) / 100)} ${currency}`
+    : null;
+}
+
+export function ContractEditor({ roomId, onBack, onSent }) {
+  const prefill = useApi(() => api.prefillContract(roomId), [roomId]);
+  const history = useApi(() => api.contracts(roomId), [roomId]);
+  const [terms, setTerms] = useState(null);
+  const [file, setFile] = useState(null);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState(null);
+
+  const previous = history.data?.versions[0];
+  const nextVersion = (previous?.version ?? 0) + 1;
+
+  // Start from the previous version after a revision request, otherwise from the prefill
+  useEffect(() => {
+    if (terms || !prefill.data || !history.data) return;
+    const base = previous ? previous.terms : prefill.data.terms;
+    const filled = Object.fromEntries(base.map((t) => [t.key, { ...t }]));
+    // Unit / currency are required: default to what the dropdowns show
+    if (filled.quantity && !filled.quantity.unit) filled.quantity.unit = "ton";
+    if (filled.unit_price && !filled.unit_price.unit) filled.unit_price.unit = "USD/ton";
+    setTerms(filled);
+  }, [prefill.data, history.data, previous, terms]);
+
+  if (!terms) {
+    return (
+      <main className="page contract-page">
+        <ApiStatus
+          loading={prefill.loading || history.loading}
+          error={prefill.error || history.error}
+          onRetry={prefill.reload}
+        />
+      </main>
+    );
+  }
+
+  const set = (key, patch) =>
+    setTerms((t) => ({ ...t, [key]: { ...t[key], ...patch } }));
+  const v = (key) => (terms[key]?.value ?? "") + "";
+  const total = previewTotal(terms);
+  const notes = previous?.term_notes ?? {};
+
+  const send = async () => {
+    setSending(true);
+    setError(null);
+    const body = Object.values(terms).map(({ key, value, unit }) => ({
+      key,
+      value,
+      unit,
+    }));
+    try {
+      if (file) {
+        const draft = await api.draftContract(roomId, body);
+        await api.attachPdf(roomId, draft.id, file);
+        await api.sendDraft(roomId, draft.id);
+      } else {
+        await api.sendContract(roomId, body);
+      }
+      onSent();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSending(false);
+    }
   };
+
   return (
     <main className="page contract-page">
       <LegalDisclaimer />
@@ -31,46 +100,38 @@ export function ContractEditor({ onBack, onSent }) {
 
       <div className="contract-page-heading">
         <div>
-          <p className="eyebrow">DR-0402 · Seller Manager</p>
-          <h1>{versionTwo ? "Create Contract v2" : "Create Contract v1"}</h1>
-          <p>Structured terms from LST-VN-0161 and room-shared information.</p>
+          <p className="eyebrow">{roomId} · Seller Manager</p>
+          <h1>Create Contract v{nextVersion}</h1>
+          <p>
+            Structured terms prefilled from the listing and room-shared
+            information.
+          </p>
         </div>
-        <label className="contract-version-toggle">
-          <span>
-            <strong>Create v2</strong>
-            After Buyer Revision Request
-          </span>
-          <Toggle
-            checked={versionTwo}
-            label="Create contract v2 after buyer revision request"
-            onChange={() => setVersionTwo(!versionTwo)}
-          />
-        </label>
       </div>
 
-      {versionTwo && (
+      {previous?.status === "revision_requested" && (
         <section className="buyer-feedback">
           <div className="feedback-head">
             <Icon name="mail" size={18} />
             <div>
-              <strong>Buyer’s clause-by-clause feedback · v1</strong>
-              <span>Requested by Dara Chhim · Phnom Penh Imports</span>
+              <strong>
+                Buyer’s clause-by-clause feedback · v{previous.version}
+              </strong>
+              <span>Revision requested by the Buyer Manager</span>
             </div>
           </div>
-          <div>
-            <span>Unit Price</span>
-            <p>
-              “Please revise to 2,100 USD / ton based on the discussed volume.”
-            </p>
-          </div>
-          <div>
-            <span>Payment Terms</span>
-            <p>“Request 20% deposit and 80% against shipping documents.”</p>
-          </div>
-          <div>
-            <span>Delivery Date</span>
-            <p>“Please confirm arrival no later than November 28.”</p>
-          </div>
+          {previous.note && (
+            <div>
+              <span>General note</span>
+              <p>“{previous.note}”</p>
+            </div>
+          )}
+          {Object.entries(notes).map(([key, note]) => (
+            <div key={key}>
+              <span>{terms[key]?.label ?? key}</span>
+              <p>“{note}”</p>
+            </div>
+          ))}
         </section>
       )}
 
@@ -81,139 +142,207 @@ export function ContractEditor({ onBack, onSent }) {
             <h2>Commercial terms</h2>
           </div>
           <div className="source-tags">
-            <span>Listing LST-VN-0161 v1</span>
-            <span>Shared in Room</span>
+            {Object.values(terms).some((t) => t.origin === "listing") && (
+              <span>Listing</span>
+            )}
+            {Object.values(terms).some((t) => t.origin === "shared") && (
+              <span>Shared in Room</span>
+            )}
           </div>
         </div>
 
         <div className="contract-form-grid">
-          <Field label="Product" value="Robusta Coffee" />
-          <Field label="Grade / Quality" value="Grade 1 · Screen 18" />
-          <Field label="Quantity" value={quantity} onChange={setQuantity} />
-          <SelectField label="Unit · Required" value="Tons">
-            <option>Tons</option>
-            <option>Kilograms</option>
+          <Field
+            label="Product"
+            value={v("product")}
+            onChange={(x) => set("product", { value: x })}
+          />
+          <Field
+            label="Grade / Quality"
+            value={v("quality")}
+            onChange={(x) => set("quality", { value: x })}
+          />
+          <Field
+            label="Quantity"
+            value={v("quantity")}
+            onChange={(x) => set("quantity", { value: x })}
+          />
+          <SelectField
+            label="Unit · Required"
+            value={terms.quantity?.unit ?? "ton"}
+            onChange={(x) => set("quantity", { unit: x })}
+          >
+            <option value="ton">Tons</option>
+            <option value="kg">Kilograms</option>
           </SelectField>
-          <Field label="Unit Price" value={unitPrice} onChange={setUnitPrice} />
-          <SelectField label="Currency · Required" value="USD">
-            <option>USD</option>
+          <Field
+            label="Unit Price"
+            value={v("unit_price")}
+            onChange={(x) => set("unit_price", { value: x })}
+          />
+          <SelectField
+            label="Currency / Unit · Required"
+            value={terms.unit_price?.unit ?? "USD/ton"}
+            onChange={(x) => set("unit_price", { unit: x })}
+          >
+            {(prefill.data?.price_units ?? ["USD/ton"]).map((u) => (
+              <option key={u}>{u}</option>
+            ))}
           </SelectField>
           <label className="field calculated-field">
             <span>Total Value · Auto-calculated</span>
-            <span className="calculated-value">{totalFormatted} USD</span>
-            <small>Quantity × Unit Price</small>
+            <span className="calculated-value">{total ?? "—"}</span>
+            <small>Quantity × Unit Price · verified by the server</small>
           </label>
-          <SelectField label="Incoterms / Delivery Terms" value="DAP">
+          <SelectField
+            label="Incoterms / Delivery Terms"
+            value={v("incoterm") || "DAP"}
+            onChange={(x) => set("incoterm", { value: x })}
+          >
             <option>DAP</option>
             <option>FOB</option>
             <option>CIF</option>
+            <option>EXW</option>
           </SelectField>
-          <Field label="Delivery Location" value="Phnom Penh, Cambodia" />
-          <Field label="Delivery Date" value="Nov 28, 2026" />
+          <Field
+            label="Delivery Location"
+            value={v("delivery_location")}
+            onChange={(x) => set("delivery_location", { value: x })}
+          />
+          <Field
+            label="Delivery Date"
+            value={v("delivery_date")}
+            onChange={(x) => set("delivery_date", { value: x })}
+          />
           <label className="field contract-wide-field">
             <span>Payment Terms</span>
             <textarea
-              defaultValue={
-                versionTwo
-                  ? "20% deposit · 80% against shipping documents"
-                  : "30% deposit · 70% against shipping documents"
-              }
-              key={versionTwo ? "v2" : "v1"}
               rows={3}
+              value={v("payment_terms")}
+              onChange={(e) => set("payment_terms", { value: e.target.value })}
             />
           </label>
         </div>
 
-        <label className={`contract-pdf-slot ${fileName ? "has-file" : ""}`}>
+        <label className={`contract-pdf-slot ${file ? "has-file" : ""}`}>
           <input
             accept=".pdf"
             type="file"
-            onChange={(event) =>
-              setFileName(event.target.files?.[0]?.name ?? "")
-            }
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
           <span>
-            <Icon name={fileName ? "check" : "file"} size={20} />
+            <Icon name={file ? "check" : "file"} size={20} />
           </span>
           <div>
-            <strong>{fileName || "Attach Reference Contract PDF"}</strong>
+            <strong>{file?.name || "Attach Reference Contract PDF"}</strong>
             <small>
-              {fileName
+              {file
                 ? "Reference attached"
                 : "Optional · PDF only · Does not replace structured terms"}
             </small>
           </div>
         </label>
 
-        <div className="policy-example-toggle">
-          <span>Policy check example</span>
-          <Toggle
-            checked={showPolicy}
-            label="Toggle total value policy check"
-            onChange={() => setShowPolicy(!showPolicy)}
-          />
-        </div>
-        {showPolicy && (
-          <div className="contract-policy-alert">
-            <span>
-              <Icon name="alert" size={16} />
-            </span>
-            <div>
-              <strong>Total value mismatch</strong>
-              <p>
-                The system has recalculated the total: {totalFormatted} USD.
-              </p>
-            </div>
-          </div>
-        )}
+        <ErrorNote error={error} />
       </section>
 
       <div className="contract-submit-bar">
         <span>
           <Icon name="lock" size={14} /> Contract · Versioned
         </span>
-        <Button onClick={sendContract}>
-          {sent
-            ? "Awaiting Buyer Confirmation"
-            : "Send to Buyer for Confirmation"}
-          {!sent && <Icon name="arrow" size={16} />}
+        <Button onClick={send} disabled={sending}>
+          {sending ? "Sending…" : "Send to Buyer for Confirmation"}
+          {!sending && <Icon name="arrow" size={16} />}
         </Button>
       </div>
     </main>
   );
 }
-export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
+
+const STATUS_TEXT = {
+  draft: "Draft",
+  pending: "Awaiting Buyer Confirmation",
+  confirmed: "Confirmed",
+  revision_requested: "Revision Requested",
+  declined: "Declined",
+  cancelled: "Cancelled",
+};
+const BADGE = {
+  draft: "Pending",
+  pending: "Pending",
+  confirmed: "Accepted",
+  revision_requested: "Pending",
+  declined: "Declined",
+  cancelled: "Expired",
+};
+
+export function ContractReview({ role, roomId, onBack, onNewVersion }) {
   const buyerManager = role === "Buyer Manager";
-  const [version, setVersion] = useState("v1");
+  const {
+    data,
+    error: loadError,
+    loading,
+    reload,
+  } = useApi(() => api.contracts(roomId), [roomId], 5000);
+  const [version, setVersion] = useState(null);
   const [acknowledged, setAcknowledged] = useState(false);
-  const [status, setStatus] = useState(
-    dealConfirmed ? "Confirmed" : "Awaiting Buyer Confirmation",
-  );
   const [actionMode, setActionMode] = useState(null);
-  const [aiExplanation, setAiExplanation] = useState(false);
+  const [termNotes, setTermNotes] = useState({});
   const [declineReason, setDeclineReason] = useState("");
-  const terms = [
-    ["Product", "Robusta Coffee"],
-    ["Grade / Quality", "Grade 1 · Screen 18"],
-    ["Quantity", "20 Tons"],
-    ["Unit Price", version === "v2" ? "2,100 USD / ton" : "2,150 USD / ton"],
-    ["Total Value", version === "v2" ? "42,000 USD" : "43,000 USD"],
-    ["Incoterms", "DAP"],
-    ["Delivery Location", "Phnom Penh, Cambodia"],
-    ["Delivery Date", "Nov 28, 2026"],
-    [
-      "Payment Terms",
-      version === "v2"
-        ? "20% deposit · 80% against documents"
-        : "30% deposit · 70% against documents",
-    ],
-  ];
-  const differs = ["Unit Price", "Delivery Location", "Payment Terms"];
-  const confirmContract = () => {
-    if (!acknowledged) return;
-    setStatus("Confirmed");
-    onConfirm();
+  const [explanation, setExplanation] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const versions = data?.versions ?? [];
+  const contract = versions.find((c) => c.version === version) ?? versions[0];
+
+  if (!contract) {
+    return (
+      <main className="page contract-page review-contract-page">
+        <button className="back-action" type="button" onClick={onBack}>
+          <Icon name="arrow" size={14} /> Back to Deal Room
+        </button>
+        <ApiStatus loading={loading} error={loadError} onRetry={reload} />
+        {data && (
+          <section className="inbox-empty">
+            <Icon name="file" size={22} />
+            <h2>No contract yet</h2>
+            <p>The Seller Manager has not sent a contract in this room.</p>
+          </section>
+        )}
+      </main>
+    );
+  }
+
+  const act = async (fn) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      setActionMode(null);
+      await reload(true);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
   };
+  const explain = async () => {
+    if (explanation) return setExplanation(null);
+    setExplanation({ answer: "Thinking…", sources: [] });
+    try {
+      setExplanation(
+        await api.ask(roomId, "Giải thích các điều khoản hợp đồng"),
+      );
+    } catch (e) {
+      setExplanation({ answer: e.message, sources: [] });
+    }
+  };
+  const canDecide = contract.actions.decide;
+  const latest = versions[0];
+  const product = contract.terms.find((t) => t.key === "product")?.value;
+  const qty = contract.terms.find((t) => t.key === "quantity");
+
   return (
     <main className="page contract-page review-contract-page">
       <LegalDisclaimer />
@@ -223,7 +352,7 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
 
       <div className="contract-page-heading">
         <div>
-          <p className="eyebrow">DR-0402 · Contract review</p>
+          <p className="eyebrow">{roomId} · Contract review</p>
           <h1>Review Contract Terms</h1>
           <p>
             Compare structured terms with the listing and room-shared
@@ -232,25 +361,21 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
         </div>
         <div className="contract-review-state">
           <ConnectionStatusBadge
-            status={status === "Confirmed" ? "Accepted" : "Pending"}
-            detail={status}
+            status={BADGE[contract.status]}
+            detail={STATUS_TEXT[contract.status]}
           />
           <div className="version-selector">
             <span>Version history</span>
-            <button
-              className={version === "v1" ? "active" : ""}
-              type="button"
-              onClick={() => setVersion("v1")}
-            >
-              v1
-            </button>
-            <button
-              className={version === "v2" ? "active" : ""}
-              type="button"
-              onClick={() => setVersion("v2")}
-            >
-              v2
-            </button>
+            {[...versions].reverse().map((c) => (
+              <button
+                key={c.id}
+                className={c.version === contract.version ? "active" : ""}
+                type="button"
+                onClick={() => setVersion(c.version)}
+              >
+                {c.version_label}
+              </button>
+            ))}
           </div>
         </div>
       </div>
@@ -258,33 +383,32 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
       <section className="contract-review-card">
         <div className="contract-editor-head">
           <div>
-            <p className="eyebrow">Contract Terms Summary · {version}</p>
-            <h2>Robusta Coffee · 20 Tons</h2>
+            <p className="eyebrow">
+              Contract Terms Summary · {contract.version_label}
+            </p>
+            <h2>
+              {product} · {fmtValue(qty?.value, qty?.unit)}
+            </h2>
           </div>
-          <button
-            className="ask-contract-ai"
-            type="button"
-            onClick={() => setAiExplanation(!aiExplanation)}
-          >
+          <button className="ask-contract-ai" type="button" onClick={explain}>
             <Icon name="spark" size={15} /> Ask Private AI to Explain Terms
           </button>
         </div>
 
-        {aiExplanation && (
+        {explanation && (
           <div className="contract-ai-explanation">
             <span className="ai-avatar">
               <Icon name="spark" size={17} />
             </span>
             <div>
               <strong>Private AI explanation</strong>
-              <p>
-                DAP means the seller arranges delivery to Phnom Penh while the
-                buyer handles import clearance. The payment balance is due
-                against shipping documents.
-              </p>
-              <span className="citation-pill">
-                Source: Contract {version} · Incoterms & Payment Terms
-              </span>
+              <p style={{ whiteSpace: "pre-line" }}>{explanation.answer}</p>
+              {explanation.sources?.length > 0 && (
+                <span className="citation-pill">
+                  Source: Contract v{explanation.sources[0].version} · Terms
+                  summary
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -295,13 +419,17 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
             <span>Structured term</span>
             <span>Comparison</span>
           </div>
-          {terms.map(([label, value]) => (
-            <div className="contract-term-row" key={label}>
-              <span>{label}</span>
-              <strong>{value}</strong>
+          {contract.terms.map((t) => (
+            <div className="contract-term-row" key={t.key}>
+              <span>{t.label}</span>
+              <strong>{fmtValue(t.value, t.unit)}</strong>
               <span>
-                {differs.includes(label) ? (
-                  <span className="differs-pill">Differs from Listing</span>
+                {t.differs_from_listing ? (
+                  <span className="differs-pill">
+                    {t.from_shared
+                      ? "From Shared Info"
+                      : "Differs from Listing"}
+                  </span>
                 ) : (
                   <span className="aligned-term">
                     <Icon name="check" size={12} /> Aligned
@@ -310,54 +438,76 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
               </span>
               {actionMode === "revision" && (
                 <label className="clause-comment">
-                  <span>Revision note for {label}</span>
+                  <span>Revision note for {t.label}</span>
                   <input
-                    placeholder={`Add feedback on ${label.toLowerCase()}…`}
+                    placeholder={`Add feedback on ${t.label.toLowerCase()}…`}
+                    value={termNotes[t.key] ?? ""}
+                    onChange={(e) =>
+                      setTermNotes({ ...termNotes, [t.key]: e.target.value })
+                    }
                   />
                 </label>
               )}
             </div>
           ))}
-        </div>
-
-        {!buyerManager ? (
-          <div className="contract-readonly">
-            <Icon name="lock" size={15} />
+          <div className="contract-term-row">
+            <span>Total Value</span>
+            <strong>
+              {fmtNumber(contract.total)} {contract.currency}
+            </strong>
             <span>
-              <strong>{status}</strong>
-              Read-only view · Contract actions are available to Buyer Manager
-              only.
+              <span className="aligned-term">
+                <Icon name="check" size={12} /> System-calculated
+              </span>
             </span>
           </div>
-        ) : status === "Confirmed" ? (
+        </div>
+
+        <ErrorNote error={error} />
+
+        {contract.status === "confirmed" ? (
           <div className="contract-confirmed-banner">
             <Icon name="check" size={18} />
             <span>
               <strong>Deal Confirmed</strong>
-              DR-0402 has been updated to Deal Closed / Confirmed.
+              {roomId} has been updated to Deal Closed / Confirmed.
             </span>
           </div>
-        ) : status === "Revision Requested" ? (
+        ) : !canDecide ? (
           <div className="contract-readonly">
-            <Icon name="mail" size={15} />
+            <Icon
+              name={
+                contract.status === "declined"
+                  ? "close"
+                  : contract.status === "revision_requested"
+                    ? "mail"
+                    : "lock"
+              }
+              size={15}
+            />
             <span>
-              <strong>Revision Requested</strong>
-              Clause feedback was sent to Seller Manager for Contract v2.
+              <strong>{STATUS_TEXT[contract.status]}</strong>
+              {contract.status === "revision_requested"
+                ? "Clause feedback was sent to the Seller Manager for a new version."
+                : contract.status === "declined"
+                  ? `${contract.note ? `“${contract.note}” · ` : ""}The room remains active.`
+                  : buyerManager
+                    ? "This version is no longer awaiting your decision."
+                    : "Read-only view · Contract actions are available to Buyer Manager only."}
             </span>
-          </div>
-        ) : status === "Declined" ? (
-          <div className="contract-readonly">
-            <Icon name="close" size={15} />
-            <span>
-              <strong>Contract Declined</strong>
-              The reason was sent to Seller Manager. DR-0402 remains Active.
-            </span>
+            {role === "Seller Manager" &&
+              contract.id === latest.id &&
+              ["revision_requested", "declined"].includes(contract.status) && (
+                <Button onClick={onNewVersion}>
+                  Create v{latest.version + 1} <Icon name="arrow" size={15} />
+                </Button>
+              )}
           </div>
         ) : (
           <div className="contract-actions">
             {actionMode === "decline" && (
               <label className="field decline-contract-reason">
-                <span>Decline reason · Required</span>
+                <span>Decline reason · Optional</span>
                 <textarea
                   placeholder="Explain why this contract cannot be confirmed"
                   rows={3}
@@ -370,7 +520,7 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
               <div className="revision-note">
                 <Icon name="mail" size={15} />
                 Add comments beneath each clause, then send them to Seller
-                Manager for v2.
+                Manager for a new version.
               </div>
             )}
             {!actionMode && (
@@ -388,9 +538,11 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
                 <>
                   <button
                     className="button button-primary"
-                    disabled={!acknowledged}
+                    disabled={!acknowledged || busy}
                     type="button"
-                    onClick={confirmContract}
+                    onClick={() =>
+                      act(() => api.confirmContract(roomId, contract.id))
+                    }
                   >
                     Confirm Contract <Icon name="check" size={15} />
                   </button>
@@ -412,10 +564,14 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
               {actionMode === "revision" && (
                 <>
                   <Button
-                    onClick={() => {
-                      setStatus("Revision Requested");
-                      setActionMode(null);
-                    }}
+                    disabled={
+                      busy || !Object.values(termNotes).some((n) => n.trim())
+                    }
+                    onClick={() =>
+                      act(() =>
+                        api.requestRevision(roomId, contract.id, termNotes),
+                      )
+                    }
                   >
                     Send Revision Request
                   </Button>
@@ -428,12 +584,17 @@ export function ContractReview({ role, dealConfirmed, onConfirm, onBack }) {
                 <>
                   <button
                     className="button button-primary"
-                    disabled={!declineReason.trim()}
+                    disabled={busy}
                     type="button"
-                    onClick={() => {
-                      setStatus("Declined");
-                      setActionMode(null);
-                    }}
+                    onClick={() =>
+                      act(() =>
+                        api.declineContract(
+                          roomId,
+                          contract.id,
+                          declineReason || null,
+                        ),
+                      )
+                    }
                   >
                     Confirm Decline
                   </button>

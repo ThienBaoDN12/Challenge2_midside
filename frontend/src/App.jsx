@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "./api";
 import { TopBar } from "./components/TopBar";
 import Login from "./pages/Login.jsx";
 import { Invitation, Members } from "./screens/Account";
@@ -17,49 +18,58 @@ import {
 } from "./screens/Buyer";
 import { DealRoom } from "./screens/DealRoom";
 import { ContractEditor, ContractReview } from "./screens/Contract";
+
+const HOME = { seller: "seller-workspace", buyer: "buyer-workspace" };
+
 export default function App() {
   const [active, setActive] = useState("onboarding");
-  const [authenticatedRole, setAuthenticatedRole] = useState(null);
-  const [workspaceRole, setWorkspaceRole] = useState("SM");
-  const [buyerRole, setBuyerRole] = useState("BM");
-  const [dealConfirmed, setDealConfirmed] = useState(false);
-  const roleOverride =
-    active === "deal-room" ||
-    active === "contract-edit" ||
-    active === "contract-review"
-      ? (authenticatedRole ?? undefined)
-      : active === "seller-workspace" || active === "seller-inbox"
-        ? workspaceRole === "SM"
-          ? "Seller Manager"
-          : "Seller Staff"
-        : active === "buyer-workspace" ||
-            active === "buyer-detail" ||
-            active === "buyer-recommendations" ||
-            active === "buyer-inbox"
-          ? buyerRole === "BM"
-            ? "Buyer Manager"
-            : "Buyer Staff"
-          : undefined;
-  const handleLogin = (role) => {
-    setAuthenticatedRole(role);
-    if (role === "Seller Manager" || role === "Seller Staff") {
-      setWorkspaceRole(role === "Seller Manager" ? "SM" : "SS");
-      setActive("seller-workspace");
-      return;
-    }
-    setBuyerRole(role === "Buyer Manager" ? "BM" : "BS");
-    setActive("buyer-workspace");
+  // Session from the backend: { user, organization, role, role_label }
+  const [me, setMe] = useState(null);
+  // Objects the current flow is working on
+  const [listingId, setListingId] = useState(null);
+  const [roomId, setRoomId] = useState(null);
+  // Listing creation draft: snapshot + chosen public fields
+  const [draft, setDraft] = useState(null);
+
+  // Restore a session after a page refresh
+  useEffect(() => {
+    api
+      .me()
+      .then((data) => {
+        if (data.organization) {
+          setMe(data);
+          setActive(HOME[data.organization.side]);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const role = me?.role_label ?? null; // "Seller Manager" | "Seller Staff" | ...
+  const sellerCode = role === "Seller Manager" ? "SM" : "SS";
+  const buyerCode = role === "Buyer Manager" ? "BM" : "BS";
+
+  const handleLogin = (session) => {
+    setMe(session);
+    setActive(HOME[session.organization.side]);
   };
   const handleSignOut = () => {
-    setAuthenticatedRole(null);
+    api.logout();
+    setMe(null);
+    setRoomId(null);
+    setListingId(null);
+    setDraft(null);
     setActive("onboarding");
   };
+  const enterRoom = (id) => {
+    setRoomId(id);
+    setActive("deal-room");
+  };
+
   return (
     <div className="app-shell">
       <TopBar
         active={active}
-        roleOverride={roleOverride}
-        authenticatedRole={authenticatedRole}
+        me={me}
         onNavigate={setActive}
         onSignOut={handleSignOut}
       />
@@ -70,72 +80,94 @@ export default function App() {
         />
       )}
       {active === "invitation" && <Invitation />}
-      {active === "members" && <Members />}
+      {active === "members" && me && <Members me={me} />}
       {active === "seller-workspace" && (
         <SellerWorkspace
-          role={workspaceRole}
-          onCreate={() => setActive("listing-upload")}
+          role={sellerCode}
+          onCreate={() => {
+            setDraft(null);
+            setActive("listing-upload");
+          }}
         />
       )}
       {active === "listing-upload" && (
         <ListingUpload
+          draft={draft}
+          onUploaded={(snapshot) =>
+            setDraft({
+              snapshot,
+              publicKeys: snapshot.fields
+                .filter((f) => f.default_public)
+                .map((f) => f.key),
+              confirmed: [],
+            })
+          }
           onContinue={() => setActive("listing-fields")}
           onNavigate={setActive}
         />
       )}
       {active === "listing-fields" && (
         <ListingFields
+          draft={draft}
+          onChange={setDraft}
           onContinue={() => setActive("listing-publish")}
           onNavigate={setActive}
         />
       )}
       {active === "listing-publish" && (
-        <ListingPublish onNavigate={setActive} />
+        <ListingPublish
+          draft={draft}
+          onNavigate={setActive}
+          onDone={() => {
+            setDraft(null);
+            setActive("seller-workspace");
+          }}
+        />
       )}
       {active === "seller-inbox" && (
-        <SellerConnectionInbox
-          role={workspaceRole}
-          onEnterRoom={() => setActive("deal-room")}
-        />
+        <SellerConnectionInbox role={sellerCode} onEnterRoom={enterRoom} />
       )}
       {active === "buyer-workspace" && (
         <BuyerWorkspace
-          role={buyerRole}
-          onOpenListing={() => setActive("buyer-detail")}
+          role={buyerCode}
+          onOpenListing={(id) => {
+            setListingId(id);
+            setActive("buyer-detail");
+          }}
         />
       )}
       {active === "buyer-detail" && (
         <BuyerDetail
-          role={buyerRole}
+          role={buyerCode}
+          listingId={listingId}
           onBack={() => setActive("buyer-workspace")}
         />
       )}
       {active === "buyer-recommendations" && <BuyerRecommendations />}
       {active === "buyer-inbox" && (
-        <BuyerConnectionInbox
-          role={buyerRole}
-          onEnterRoom={() => setActive("deal-room")}
-        />
+        <BuyerConnectionInbox role={buyerCode} onEnterRoom={enterRoom} />
       )}
-      {active === "deal-room" && authenticatedRole && (
+      {active === "deal-room" && role && (
         <DealRoom
-          role={authenticatedRole}
-          dealConfirmed={dealConfirmed}
+          role={role}
+          roomId={roomId}
+          onRoomResolved={setRoomId}
           onNavigate={setActive}
         />
       )}
-      {active === "contract-edit" && authenticatedRole === "Seller Manager" && (
+      {active === "contract-edit" && role === "Seller Manager" && roomId && (
         <ContractEditor
+          roomId={roomId}
           onBack={() => setActive("deal-room")}
           onSent={() => setActive("contract-review")}
         />
       )}
-      {active === "contract-review" && authenticatedRole && (
+      {active === "contract-review" && role && roomId && (
         <ContractReview
-          role={authenticatedRole}
-          dealConfirmed={dealConfirmed}
-          onConfirm={() => setDealConfirmed(true)}
+          role={role}
+          roomId={roomId}
           onBack={() => setActive("deal-room")}
+          onNewVersion={() => setActive("contract-edit")}
         />
       )}
     </div>

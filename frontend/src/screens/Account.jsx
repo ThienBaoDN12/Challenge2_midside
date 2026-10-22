@@ -1,5 +1,15 @@
 import { useState } from "react";
-import { team, Icon, Button, Field, SelectField } from "../shared";
+import { api } from "../api";
+import { useApi } from "../hooks";
+import { initials } from "../format";
+import {
+  Icon,
+  Button,
+  Field,
+  SelectField,
+  ApiStatus,
+  ErrorNote,
+} from "../shared";
 export function Invitation() {
   const [expired, setExpired] = useState(false);
   const [accepted, setAccepted] = useState(false);
@@ -80,21 +90,73 @@ export function Invitation() {
     </main>
   );
 }
-export function Members() {
+const INVITE_STATUS = {
+  pending: "Pending Acceptance",
+  expired: "Expired",
+  revoked: "Revoked",
+};
+
+export function Members({ me }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("Staff");
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState(null);
+  const [error, setError] = useState(null);
+  const {
+    data,
+    error: loadError,
+    loading,
+    reload,
+  } = useApi(() => api.members());
+
+  const run = async (fn) => {
+    setError(null);
+    try {
+      await fn();
+      await reload(true);
+    } catch (e) {
+      setError(e);
+    }
+  };
   const sendInvite = (event) => {
     event.preventDefault();
     if (!email) return;
-    setSent(true);
-    setEmail("");
+    run(async () => {
+      const inv = await api.invite(email, role.toLowerCase());
+      setSent(inv);
+      setEmail("");
+    });
   };
+
+  const rows = [
+    ...(data?.members ?? []).map((m) => ({
+      key: m.user_id,
+      userId: m.user_id,
+      name: m.name,
+      email: m.email,
+      role: m.role === "manager" ? "Manager" : "Staff",
+      status: "Active",
+    })),
+    ...(data?.invites ?? [])
+      .filter((i) => i.status !== "revoked")
+      .map((i) => ({
+        key: i.id,
+        name: i.email.split("@")[0],
+        email: i.email,
+        role: i.role === "manager" ? "Manager" : "Staff",
+        status: INVITE_STATUS[i.status],
+        invite: i,
+      })),
+  ];
+  const active = data?.members.length ?? 0;
+  const invited = rows.length - active;
+
   return (
     <main className="page members-page">
       <div className="members-heading">
         <div>
-          <p className="eyebrow">Organization access</p>
+          <p className="eyebrow">
+            Organization access · {me.organization.name}
+          </p>
           <h1>Team members</h1>
           <p>
             Manage who can prepare, review, and share your organization’s trade
@@ -102,7 +164,7 @@ export function Members() {
           </p>
         </div>
         <div className="member-count">
-          <span>4</span>
+          <span>{active}</span>
           <small>members</small>
         </div>
       </div>
@@ -114,7 +176,10 @@ export function Members() {
           </span>
           <div>
             <h2>Invite staff to your organization</h2>
-            <p>They’ll receive a secure link to join your workspace.</p>
+            <p>
+              They’ll receive a secure link to join your workspace (valid 7
+              days).
+            </p>
           </div>
         </div>
         <form className="invite-form" onSubmit={sendInvite}>
@@ -125,7 +190,7 @@ export function Members() {
             placeholder="name@company.com"
             onChange={(value) => {
               setEmail(value);
-              setSent(false);
+              setSent(null);
             }}
           />
           <SelectField label="Role" value={role} onChange={setRole}>
@@ -136,14 +201,24 @@ export function Members() {
             <Icon name="plus" size={16} /> Send Invite
           </Button>
         </form>
-        {sent && <span className="invite-sent">Invitation sent</span>}
+        {sent && (
+          <span className="invite-sent">Invitation sent to {sent.email}</span>
+        )}
       </section>
+      <ErrorNote error={error} />
 
       <section className="team-section">
         <div className="table-heading">
           <h2>Organization members</h2>
-          <span>2 active · 2 invited</span>
+          <span>
+            {active} active · {invited} invited
+          </span>
         </div>
+        <ApiStatus
+          loading={loading && !data}
+          error={loadError}
+          onRetry={reload}
+        />
         <div
           className="team-table"
           role="table"
@@ -156,10 +231,10 @@ export function Members() {
             <span role="columnheader">Access</span>
             <span role="columnheader" aria-label="Actions" />
           </div>
-          {team.map((member) => (
-            <div className="table-row" role="row" key={member.email}>
+          {rows.map((member) => (
+            <div className="table-row" role="row" key={member.key}>
               <div className="member-cell" role="cell">
-                <span className="member-avatar">{member.initials}</span>
+                <span className="member-avatar">{initials(member.name)}</span>
                 <span>
                   <strong>{member.name}</strong>
                   <small>{member.email}</small>
@@ -179,21 +254,27 @@ export function Members() {
               <span className="access-cell" role="cell">
                 {member.role === "Manager"
                   ? "Full organization"
-                  : "Assigned rooms"}
+                  : "Public data & rooms"}
               </span>
               <span className="row-action" role="cell">
-                {member.status === "Pending Acceptance" ? (
-                  <button type="button">Resend</button>
-                ) : member.status === "Expired" ? (
-                  <button type="button">Renew</button>
-                ) : member.role === "Manager" ? (
+                {member.invite ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      run(() => api.invite(member.email, member.invite.role))
+                    }
+                  >
+                    {member.status === "Expired" ? "Renew" : "Resend"}
+                  </button>
+                ) : member.userId === me.user.id ? (
                   <span className="you-label">You</span>
                 ) : (
                   <button
                     type="button"
-                    aria-label={`Open actions for ${member.name}`}
+                    aria-label={`Remove ${member.name}`}
+                    onClick={() => run(() => api.removeMember(member.userId))}
                   >
-                    ···
+                    Remove
                   </button>
                 )}
               </span>

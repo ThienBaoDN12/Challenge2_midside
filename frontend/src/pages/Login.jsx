@@ -1,7 +1,16 @@
 import { useState } from "react";
+import { api } from "../api";
 import Dropdown from "../components/Dropdown.jsx";
 import Stepper from "../components/Stepper.jsx";
 import { ArrowIcon, EyeIcon, LockIcon } from "../components/Icons.jsx";
+
+// Seeded demo accounts (backend/app/seed.py) — TideCloak stand-in
+const DEMO_EMAILS = {
+  "seller-manager": "lan@mekongagro.vn",
+  "seller-staff": "minh@mekongagro.vn",
+  "buyer-manager": "dara@ppimports.com.kh",
+  "buyer-staff": "sokha@ppimports.com.kh",
+};
 
 const ROLES = [
   {
@@ -38,6 +47,7 @@ export default function Login({ onLogin, onOpenInvite }) {
   const [org, setOrg] = useState("Mekong Agro");
   const [roleId, setRoleId] = useState("seller-manager");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   const role = ROLES.find((r) => r.id === roleId);
 
@@ -46,15 +56,24 @@ export default function Login({ onLogin, onOpenInvite }) {
     setSide(r.side);
   }
 
-  function signIn() {
+  async function signIn() {
     setLoading(true);
-    // TODO: replace with real TideCloak redirect
-    setTimeout(() => {
-      setLoading(false);
-      // Staff are already members (joined by invite), so they go straight to their workspace
-      if (isStaff(roleId)) return onLogin(role.label);
+    setError(null);
+    try {
+      // TODO: replace with the real TideCloak OIDC redirect
+      const session = await api.login(DEMO_EMAILS[roleId]);
+      // Existing members go straight to their workspace; a new account sets up its organization
+      if (session.organization) return onLogin(session);
       setStep(2);
-    }, 700);
+    } catch (e) {
+      setError(
+        e.status
+          ? e.message
+          : "Cannot reach the backend. Start it with: uvicorn app.main:app --reload",
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -96,6 +115,8 @@ export default function Login({ onLogin, onOpenInvite }) {
                     </button>
                   ))}
                 </div>
+
+                {error && <p className="hint">{error}</p>}
 
                 {isStaff(roleId) && (
                   <p className="hint">
@@ -190,11 +211,9 @@ export default function Login({ onLogin, onOpenInvite }) {
                 side={side}
                 defaultOrg={org}
                 onBack={() => setStep(2)}
-                onSubmit={(name) => {
-                  setOrg(name);
-                  onLogin(
-                    side === "seller" ? "Seller Manager" : "Buyer Manager",
-                  );
+                onSubmit={async (profile) => {
+                  setOrg(profile.name);
+                  onLogin(await api.createOrg({ ...profile, side }));
                 }}
               />
             )}
@@ -240,6 +259,8 @@ function Intro() {
 
 function ProfileForm({ side, defaultOrg, onBack, onSubmit }) {
   const [org, setOrg] = useState(defaultOrg);
+  const [group, setGroup] = useState("Coffee");
+  const [description, setDescription] = useState("");
 
   return (
     <form
@@ -247,7 +268,12 @@ function ProfileForm({ side, defaultOrg, onBack, onSubmit }) {
       noValidate
       onSubmit={(e) => {
         e.preventDefault();
-        if (org.trim()) onSubmit(org.trim());
+        if (org.trim())
+          onSubmit({
+            name: org.trim(),
+            product_group: group.toLowerCase(),
+            description,
+          });
       }}
     >
       <p className="eyebrow eyebrow--center">Step 3 of 3</p>
@@ -270,6 +296,8 @@ function ProfileForm({ side, defaultOrg, onBack, onSubmit }) {
           <Dropdown
             ariaLabel="Product group"
             options={["Coffee", "Pepper", "Cashew", "Rice"]}
+            value={group}
+            onChange={setGroup}
           />
         </div>
       </div>
@@ -278,6 +306,8 @@ function ProfileForm({ side, defaultOrg, onBack, onSubmit }) {
         <textarea
           rows={3}
           placeholder="What you trade, capacity, certifications…"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
         />
       </label>
       <p className="fine">

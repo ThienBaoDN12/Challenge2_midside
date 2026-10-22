@@ -1,25 +1,10 @@
-import { screenMeta, Logo } from "../shared";
-export function TopBar({
-  active,
-  roleOverride,
-  authenticatedRole,
-  onNavigate,
-  onSignOut,
-}) {
-  const meta = screenMeta[active];
-  const roomContext =
-    active === "deal-room" ||
-    active === "contract-edit" ||
-    active === "contract-review";
-  const roomForBuyer = roomContext && authenticatedRole?.startsWith("Buyer");
-  const roomForSeller = roomContext && authenticatedRole?.startsWith("Seller");
-  const displayOrg = roomForBuyer ? "Phnom Penh Imports" : meta.org;
-  const contextualOrg = roomForSeller ? "Mekong Agro" : displayOrg;
-  const displaySide = roomForBuyer
-    ? "buyer"
-    : roomForSeller
-      ? "seller"
-      : meta.side;
+import { Logo } from "../shared";
+import { initials } from "../format";
+export function TopBar({ active, me, onNavigate, onSignOut }) {
+  // Organization and role always come from the signed-in session (server-side)
+  const authenticatedRole = me?.role_label ?? null;
+  const contextualOrg = me?.organization?.name ?? "";
+  const displaySide = me?.organization?.side ?? "seller";
   return (
     <header className="topbar">
       <Logo />
@@ -45,6 +30,15 @@ export function TopBar({
               </button>
             )}
             {authenticatedRole === "Seller Manager" && (
+              <button
+                className={active === "members" ? "active" : ""}
+                type="button"
+                onClick={() => onNavigate("members")}
+              >
+                Team
+              </button>
+            )}
+            {authenticatedRole === "Buyer Manager" && (
               <button
                 className={active === "members" ? "active" : ""}
                 type="button"
@@ -99,14 +93,18 @@ export function TopBar({
             </button>
           </div>
         )}
-        <span className="account-org">{contextualOrg}</span>
-        <span aria-hidden="true" className="account-divider" />
-        <span className={`role-badge ${displaySide}`}>
-          {roleOverride ?? meta.role}
-        </span>
-        <span className="avatar">
-          {contextualOrg.slice(0, 2).toUpperCase()}
-        </span>
+        {authenticatedRole && (
+          <>
+            <span className="account-org">{contextualOrg}</span>
+            <span aria-hidden="true" className="account-divider" />
+            <span className={`role-badge ${displaySide}`}>
+              {authenticatedRole}
+            </span>
+            <span className="avatar" title={me.user.name}>
+              {initials(me.user.name)}
+            </span>
+          </>
+        )}
         {authenticatedRole && (
           <button className="switch-account" type="button" onClick={onSignOut}>
             Sign out
