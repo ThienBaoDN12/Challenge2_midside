@@ -3,7 +3,6 @@ import sqlite3
 import pandas as pd
 import datetime
 import hashlib
-import json
 
 # Cấu hình trang hiển thị
 st.set_page_config(
@@ -22,22 +21,6 @@ st.markdown("""
         border: 1px solid #dee2e6;
         text-align: center;
     }
-    .status-badge-ok {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 4px 8px;
-        border-radius: 12px;
-        font-weight: bold;
-        font-size: 0.85rem;
-    }
-    .status-badge-lock {
-        background-color: #f8d7da;
-        color: #721c24;
-        padding: 4px 8px;
-        border-radius: 12px;
-        font-weight: bold;
-        font-size: 0.85rem;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,6 +30,14 @@ st.markdown("""
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
+    
+    # Kiểm tra và làm mới bảng nếu cấu trúc cột bị cũ
+    try:
+        cursor.execute("SELECT owner_did FROM market_pool LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("DROP TABLE IF EXISTS market_pool")
+        cursor.execute("DROP TABLE IF EXISTS deals")
+        cursor.execute("DROP TABLE IF EXISTS tide_identities")
     
     # 1. Bảng lưu trữ danh tính phân tán TideCloak
     cursor.execute("""
@@ -95,7 +86,7 @@ def init_db():
     )
     """)
     
-    # Khởi tạo dữ liệu mẫu nếu database mới tinh
+    # Khởi tạo dữ liệu mẫu nếu chưa có
     cursor.execute("SELECT COUNT(*) FROM tide_identities")
     if cursor.fetchone()[0] == 0:
         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -103,13 +94,13 @@ def init_db():
         # Tài khoản Bên Bán (Việt Nam)
         did_seller = "did:tide:vn_lamvien_7a8f90b"
         pk_seller = "pk_secp256k1_vn_04e8b910a3c4..."
-        cursor.execute("INSERT INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
+        cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
                        (did_seller, pk_seller, "Trần Thu Hà", "Nông sản Lâm Viên", "Bên Bán (Việt Nam)", "Việt Nam", now))
         
         # Tài khoản Bên Mua (Campuchia)
         did_buyer = "did:tide:kh_mekong_3d4e12a"
         pk_buyer = "pk_secp256k1_kh_02c77d9811f2..."
-        cursor.execute("INSERT INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
+        cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
                        (did_buyer, pk_buyer, "Sok Dara", "Mekong Fresh Trading", "Bên Mua (Campuchia)", "Campuchia", now))
         
         # Thêm 2 bài đăng mẫu vào sàn
@@ -199,7 +190,6 @@ if st.session_state.auth_user is None:
 # ==========================================
 cur_u = st.session_state.auth_user
 
-# Sidebar thông tin tài khoản
 with st.sidebar:
     st.header("🛡️ Phiên Danh Tính TideCloak")
     st.markdown(f"**Người đại diện:** {cur_u['fullname']}")
@@ -223,9 +213,7 @@ tab1, tab2, tab3 = st.tabs([
     "🛡️ 3. Kiểm Tra Bảo Mật TideCloak"
 ])
 
-# ----------------------------------------------------
-# TAB 1: SÀN THỊ TRƯỜNG CHUNG (MARKETPLACE POOL)
-# ----------------------------------------------------
+# ---------------- TAB 1: SÀN THỊ TRƯỜNG CHUNG ----------------
 with tab1:
     st.subheader("Sàn Hàng Hóa & Nhu Cầu Mua Bán Nông Sản")
     
@@ -277,7 +265,6 @@ with tab1:
                         seller = powner_did if ptype == "BÁN" else cur_u['did']
                         buyer = cur_u['did'] if ptype == "BÁN" else powner_did
                         
-                        # Giá khởi điểm 2 bên chào
                         s_pr = pprice if ptype == "BÁN" else pprice * 1.05
                         b_pr = pprice * 0.93 if ptype == "BÁN" else pprice
                         
@@ -292,9 +279,7 @@ with tab1:
                     st.caption("Tin của bạn")
             st.divider()
 
-# ----------------------------------------------------
-# TAB 2: PHÒNG THƯƠNG LƯỢNG GIÁ & AI COPILOT
-# ----------------------------------------------------
+# ---------------- TAB 2: PHÒNG THƯƠNG LƯỢNG GIÁ & AI COPILOT ----------------
 with tab2:
     st.subheader("Phòng Thương Lượng Đang Hoạt Động")
     
@@ -326,7 +311,6 @@ with tab2:
         
         c_p2p, c_tide = st.columns([1, 1])
         
-        # CỘT TRÁI: ĐÀM PHÁN GIÁ 2 BÊN -> AI HỖ TRỢ
         with c_p2p:
             st.markdown("### 1. Thương Lượng Mức Giá Kỳ Vọng")
             col_v1, col_v2 = st.columns(2)
@@ -359,7 +343,6 @@ with tab2:
                     st.rerun()
 
             st.markdown("---")
-            # KÍCH HOẠT AI KHI BẾ TẮC
             st.markdown("### 2. Bất Đồng Quan Điểm? Nhờ AI Phân Tích")
             st.caption("AI hoạt động trong vùng cách ly, tính toán chi phí vận chuyển ($35/tấn) để đề xuất mức giá cân bằng lợi ích cho cả hai bên[cite: 7, 11].")
             
@@ -378,7 +361,6 @@ with tab2:
                     conn.commit()
                     st.rerun()
 
-        # CỘT PHẢI: CỔNG ĐỒNG THUẬN TIDECLOAK (DUAL CONSENSUS GATE)
         with c_tide:
             st.markdown("### 3. Phê Duyệt Đồng Thuận (Tide Dual-Consensus)")
             st.caption("Nguyên tắc Không Quyền Kiểm Soát Đơn Phương (No Unilateral Control): Hợp đồng chỉ phát sinh hiệu lực khi cả 2 bên cùng ký số[cite: 1, 7].")
@@ -421,9 +403,7 @@ with tab2:
                 st.error("🔒 **TRẠNG THÁI: CHƯA ĐỦ ĐỒNG THUẬN (FAIL-CLOSED)**")
                 st.caption("Chính sách TideCloak: Nếu thiếu chữ ký của một trong hai bên, hợp đồng hoàn toàn không thể thực thi[cite: 1, 7, 11].")
 
-# ----------------------------------------------------
-# TAB 3: BẢO MẬT & KIỂM THỬ TIDECLOAK
-# ----------------------------------------------------
+# ---------------- TAB 3: BẢO MẬT & KIỂM THỬ TIDECLOAK ----------------
 with tab3:
     st.subheader("Cổng Giám Sát Phân Quyền & Kiểm Thử Bảo Mật (TideCloak Enforcement)")
     
