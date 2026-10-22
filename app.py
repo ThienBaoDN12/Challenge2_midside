@@ -86,7 +86,7 @@ def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
     
-    # Bảng lưu danh tính phân tán TideCloak
+    # 1. Bảng lưu danh tính phân tán TideCloak
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS tide_identities (
         did_address TEXT PRIMARY KEY,
@@ -99,7 +99,7 @@ def init_db():
     )
     """)
     
-    # Bảng Sàn Thị Trường Chung
+    # 2. Bảng Sàn Thị Trường Chung
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS market_pool (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +114,7 @@ def init_db():
     )
     """)
     
-    # Bảng Phiên Thương Lượng
+    # 3. Bảng Phiên Thương Lượng
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS deals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,7 +134,14 @@ def init_db():
     )
     """)
     
-    # Bảng Lịch Sử Tin Nhắn
+    # Tự động vá thêm cột rejected_by vào bảng deals cũ nếu chưa có
+    try:
+        cursor.execute("SELECT rejected_by FROM deals LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE deals ADD COLUMN rejected_by TEXT DEFAULT ''")
+        conn.commit()
+
+    # 4. Bảng Lịch Sử Tin Nhắn
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS deal_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
