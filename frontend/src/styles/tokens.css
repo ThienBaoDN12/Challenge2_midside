@@ -1,0 +1,23 @@
+/* TrustGate palette — 50% sand, 20% clay, 20% sage, 10% ink */
+:root {
+  --sand: #F3E4C9;
+  --sand-50: #FBF5EA;
+  --sand-100: #F8EEDC;
+  --sand-300: #EBD7B4;
+  --clay: #8A5F41;
+  --clay-600: #744E34;
+  --clay-100: #EAD5C2;
+  --sage: #A8BBA3;
+  --sage-600: #6F8769;
+  --sage-100: #DCE5D8;
+  --ink: #1F150C;
+  --ink-70: rgba(31, 21, 12, .7);
+  --ink-50: rgba(31, 21, 12, .52);
+  --line: rgba(31, 21, 12, .1);
+
+  --radius-sm: 10px;
+  --radius: 16px;
+  --radius-lg: 28px;
+  --shadow: 0 1px 2px rgba(31,21,12,.04), 0 18px 40px -18px rgba(31,21,12,.22);
+  --font: Arial, Helvetica, sans-serif;
+}
