@@ -6,7 +6,6 @@ import hashlib
 import json
 import requests
 
-# Cấu hình trang hiển thị
 st.set_page_config(
     page_title="TrustGate AI — Sàn Thương Lượng Nông Sản Đa Bên",
     layout="wide",
@@ -16,13 +15,6 @@ st.set_page_config(
 # Tùy biến CSS giao diện
 st.markdown("""
 <style>
-    .metric-box {
-        background-color: #f8f9fa;
-        border-radius: 8px;
-        padding: 12px;
-        border: 1px solid #dee2e6;
-        text-align: center;
-    }
     .chat-bubble-seller {
         background-color: #e3f2fd;
         padding: 10px 14px;
@@ -38,11 +30,19 @@ st.markdown("""
         max-width: 80%;
         margin-left: auto;
     }
+    .chat-bubble-ai {
+        background-color: #fff8e1;
+        border-left: 4px solid #ffb300;
+        padding: 10px 14px;
+        border-radius: 0px 12px 12px 0px;
+        margin-bottom: 8px;
+        max-width: 85%;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. KHỞI TẠO CƠ SỞ DỮ LIỆU SQLITE
+# 1. KHỞI TẠO DATABASE
 # ==========================================
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
@@ -106,7 +106,6 @@ def init_db():
     cursor.execute("SELECT COUNT(*) FROM tide_identities")
     if cursor.fetchone()[0] == 0:
         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-        
         did_seller = "did:tide:vn_lamvien_7a8f90b"
         pk_seller = "pk_secp256k1_vn_04e8b910a3c4..."
         cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -138,66 +137,50 @@ if "active_nav" not in st.session_state:
     st.session_state.active_nav = "🛒 1. Sàn Thị Trường Chung (Pool)"
 
 # ==========================================
-# 2. HÀM GỌI GEMINI REST API ỔN ĐỊNH
+# 2. HÀM CHAT TRỰC TIẾP VỚI GEMINI LLM
 # ==========================================
-def analyze_fair_price_with_ai(product, quantity, seller_price, buyer_price, chat_history):
-    # Lấy key từ secrets nếu có, hoặc dùng key cấu hình sẵn
+def ask_gemini_copilot(user_query, product, quantity, seller_price, buyer_price, chat_history):
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     
-    prompt = f"""
-    Bạn là Trợ lý AI trung gian thương mại nông sản độc lập (TrustGate AI Copilot) giữa Việt Nam và Campuchia.
-    Nhiệm vụ: Phân tích bối cảnh đàm phán và đề xuất mức giá cân bằng hợp lý (Fair Price) cho cả hai bên.
+    system_instruction = f"""
+    Bạn là TrustGate AI Copilot - một chuyên gia kinh tế nông nghiệp và trung gian hòa giải thương mại độc lập giữa Bên Bán (Việt Nam) và Bên Mua (Campuchia).
     
-    DỮ LIỆU ĐÀM PHÁN:
+    THÔNG TIN GIAO DỊCH HIỆN TẠI:
     - Mặt hàng: {product}
     - Khối lượng: {quantity}
-    - Giá Bên Bán (Việt Nam) chào: {seller_price} USD/tấn
-    - Giá Bên Mua (Campuchia) đề xuất: {buyer_price} USD/tấn
-    - Lịch sử thương lượng tại phòng chat:
+    - Mức giá chào bán: {seller_price} USD/tấn
+    - Mức giá đề xuất mua: {buyer_price} USD/tấn
+    - Vận chuyển: Tuyến đường bộ Mộc Bài - Phnom Penh (cước phí ước tính 30 - 45 USD/tấn).
+    
+    LỊCH SỬ TRAO ĐỔI TRONG PHÒNG THƯƠNG LƯỢNG:
     {chat_history}
     
-    NGUYÊN TẮC:
-    1. Cân nhắc cước vận chuyển đường bộ qua cửa khẩu Mộc Bài/Bavet (khoảng 30 - 45 USD/tấn).
-    2. Đưa ra mức giá khả thi nằm giữa mức của hai bên, phân tích dựa trên ngữ cảnh ai chịu vận chuyển.
-    3. Phản hồi CHÍNH XÁC định dạng JSON thuần túy (không bọc trong dấu ```json hay bất kỳ chữ nào khác):
-    {{"suggested_price": 2175.0, "reasoning": "giải thích ngắn gọn 1-2 câu"}}
+    NGUYÊN TẮC TRẢ LỜI:
+    1. Trả lời trực tiếp, thông minh, khách quan vào câu hỏi của người dùng.
+    2. Nếu người dùng hỏi về mức giá hợp lý hoặc nhờ hòa giải, hãy phân tích dựa trên biên lợi nhuận, chi phí logistics và đưa ra mức giá cụ thể (USD/tấn) có lý giải chi tiết.
+    3. Giữ câu trả lời súc tích, chuyên nghiệp trong khoảng 2-4 câu.
     """
-
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){api_key}"
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2}
+        "contents": [
+            {"role": "user", "parts": [{"text": f"{system_instruction}\n\nNgười dùng vừa hỏi: {user_query}"}]}
+        ],
+        "generationConfig": {"temperature": 0.4}
     }
-
+    
     try:
         res = requests.post(url, json=payload, timeout=12)
         if res.status_code == 200:
-            res_json = res.json()
-            raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-            # Làm sạch nếu dính markdown block
-            if raw_text.startswith("```"):
-                raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            data = json.loads(raw_text)
-            return {
-                "suggested_price": float(data.get("suggested_price", (seller_price + buyer_price)/2)),
-                "reasoning": data.get("reasoning", "Mức giá đề xuất cân bằng lợi ích hai bên.")
-            }
+            data = res.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
         else:
-            # Fallback nếu key không hợp lệ
-            calc = round((seller_price + buyer_price) / 2.0 + 17.5, 1)
-            return {
-                "suggested_price": calc,
-                "reasoning": f"Hệ thống tạm tính mức giá hòa giải tối ưu (bù đắp 50% chi phí vận chuyển đường bộ)."
-            }
-    except Exception:
-        calc = round((seller_price + buyer_price) / 2.0 + 17.5, 1)
-        return {
-            "suggested_price": calc,
-            "reasoning": "Mức giá trung gian cân đối chi phí logistics và biên lợi nhuận hai bên."
-        }
+            return f"Không thể kết nối Gemini API (Mã phản hồi: {res.status_code})."
+    except Exception as e:
+        return f"Lỗi ngoại lệ khi gọi AI: {str(e)}"
 
 # ==========================================
-# 3. XÁC THỰC DANH TÍNH TIDECLOAK
+# 3. GIAO DIỆN ĐĂNG NHẬP
 # ==========================================
 if st.session_state.auth_user is None:
     st.title("🛡️ TrustGate AI — Cổng Xác Thực TideCloak")
@@ -264,11 +247,10 @@ if st.session_state.auth_user is None:
     st.stop()
 
 # ==========================================
-# 4. GIAO DIỆN CHÍNH SAU KHI ĐĂNG NHẬP
+# 4. GIAO DIỆN CHÍNH
 # ==========================================
 cur_u = st.session_state.auth_user
 
-# Sidebar hiển thị danh tính (ĐÃ ẨN HOÀN TOÀN Ô KEY)
 with st.sidebar:
     st.header("🛡️ Phiên Danh Tính TideCloak")
     st.markdown(f"**Người đại diện:** {cur_u['fullname']}")
@@ -279,8 +261,8 @@ with st.sidebar:
     st.caption("Trạng thái: ĐÃ XÁC THỰC PHÂN TÁN")
     
     st.divider()
-    st.markdown("### 🤖 Trạng Thái AI Copilot")
-    st.success("Gemini 1.5 Flash Copilot: Sẵn sàng")
+    st.markdown("### 🤖 Trợ Lý Gemini Copilot")
+    st.info("💡 **Mẹo tương tác AI:** Trong khung chat, bạn có thể gõ kèm cú pháp `@ai` (ví dụ: `@ai phân tích mức giá này giúp tôi`) để gọi trực tiếp mô hình Gemini trả lời.")
         
     st.divider()
     if st.button("🚪 Đăng Xuất"):
@@ -308,7 +290,7 @@ st.session_state.active_nav = selected_nav
 st.divider()
 
 # ========================================================
-# TAB 1: SÀN THỊ TRƯỜNG CHUNG (MARKETPLACE POOL)
+# TAB 1: SÀN THỊ TRƯỜNG CHUNG
 # ========================================================
 if st.session_state.active_nav == "🛒 1. Sàn Thị Trường Chung (Pool)":
     st.subheader("Sàn Hàng Hóa & Nhu Cầu Mua Bán Nông Sản")
@@ -386,7 +368,7 @@ if st.session_state.active_nav == "🛒 1. Sàn Thị Trường Chung (Pool)":
             st.divider()
 
 # ========================================================
-# TAB 2: PHÒNG THƯƠNG LƯỢNG GIÁ & KHUNG CHAT
+# TAB 2: PHÒNG THƯƠNG LƯỢNG GIÁ & CHAT VỚI AI
 # ========================================================
 elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
     st.subheader("Phòng Thương Lượng Trực Tiếp & Trợ Lý AI")
@@ -422,14 +404,16 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
         is_buyer = (cur_u['did'] == d_b_did)
         
         st.markdown(f"**Mặt hàng:** {d_prod} | **Sản lượng:** {d_qty}")
-        st.caption(f"Bên Bán (Seller): `{d_s_did}` ⟷ Bên Mua (Buyer): `{d_b_did}`")
+        st.caption(f"Bên Bán: `{d_s_did}` ⟷ Bên Mua: `{d_b_did}`")
         
         c_chat, c_price = st.columns([1, 1])
         
+        # ---------------- KHUNG CHAT TƯƠNG TÁC THỰC ----------------
         with c_chat:
-            st.markdown("### 💬 Trao Đổi Thương Lượng")
+            st.markdown("### 💬 Trao Đổi Thương Lượng & Đặt Câu Hỏi Cho AI")
+            st.caption("Nhập tin nhắn trao đổi thông thường, hoặc bắt đầu bằng `@ai` để yêu cầu Gemini trả lời trực tiếp.")
             
-            chat_container = st.container(height=320)
+            chat_container = st.container(height=360)
             cursor.execute("SELECT sender_did, sender_name, message, created_at FROM deal_messages WHERE deal_id = ? ORDER BY id ASC", (d_id,))
             messages = cursor.fetchall()
             
@@ -438,23 +422,48 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
                     st.caption("Chưa có tin nhắn nào trong phiên này.")
                 for msg in messages:
                     m_did, m_name, m_text, m_time = msg
-                    if m_did == d_s_did:
+                    if m_did == "did:tide:ai_copilot":
+                        st.markdown(f"<div class='chat-bubble-ai'><b>🤖 {m_name}:</b><br>{m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
+                    elif m_did == d_s_did:
                         st.markdown(f"<div class='chat-bubble-seller'><b>[Bên Bán] {m_name}:</b> {m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
-                    elif m_did == "did:tide:ai_copilot":
-                        st.markdown(f"<div style='background-color:#fff3cd; padding:10px; border-radius:10px; margin-bottom:8px;'><b>🤖 {m_name}:</b> {m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
                     else:
                         st.markdown(f"<div class='chat-bubble-buyer'><b>[Bên Mua] {m_name}:</b> {m_text}<br><small style='color:gray'>{m_time}</small></div>", unsafe_allow_html=True)
             
             with st.form(f"form_send_msg_{d_id}", clear_on_submit=True):
-                new_msg_text = st.text_input("Nhập tin nhắn trao đổi...", placeholder="Ví dụ: Mức giá này đã gồm phí bốc xếp chưa?")
-                if st.form_submit_button("Gửi Tin Nhắn"):
+                new_msg_text = st.text_input("Nội dung tin nhắn / Câu hỏi:", placeholder="Ví dụ: @ai mức giá 2150 có lợi cho bên mua không?")
+                c_btn1, c_btn2 = st.columns([1, 1])
+                send_normal = c_btn1.form_submit_button("📤 Gửi Tin Nhắn")
+                ask_ai_direct = c_btn2.form_submit_button("🤖 Hỏi Trực Tiếp Gemini")
+                
+                if send_normal or ask_ai_direct:
                     if new_msg_text.strip():
                         now_m = datetime.datetime.now().strftime("%H:%M")
+                        # 1. Ghi tin nhắn người dùng vào cơ sở dữ liệu
                         cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
                                        (d_id, cur_u['did'], cur_u['fullname'], new_msg_text.strip(), now_m))
                         conn.commit()
+                        
+                        # 2. Nếu có cờ @ai hoặc bấm nút "Hỏi Trực Tiếp Gemini", gọi AI phản hồi
+                        if ask_ai_direct or "@ai" in new_msg_text.lower():
+                            # Lấy ngữ cảnh các tin nhắn trước
+                            chat_context = "\n".join([f"- {m[1]}: {m[2]}" for m in messages[-6:]]) if messages else "Chưa có thêm ghi chú."
+                            
+                            ai_answer = ask_gemini_copilot(
+                                user_query=new_msg_text,
+                                product=d_prod,
+                                quantity=d_qty,
+                                seller_price=d_s_pr,
+                                buyer_price=d_b_pr,
+                                chat_history=chat_context
+                            )
+                            
+                            # Ghi câu trả lời của AI vào cơ sở dữ liệu
+                            cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                                           (d_id, "did:tide:ai_copilot", "TrustGate AI Copilot (Gemini)", ai_answer, now_m))
+                            conn.commit()
                         st.rerun()
 
+        # ---------------- THIẾT LẬP GIÁ & ĐỒNG THUẬN ----------------
         with c_price:
             st.markdown("### 🏷️ Thiết Lập Mức Giá Thương Lượng")
             
@@ -495,47 +504,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
 
             st.divider()
             
-            st.markdown("#### Trợ Lý AI Điều Phối Giá Cân Bằng (Gemini Copilot)")
-            st.caption("AI hoạt động trong vùng cách ly, phân tích lịch sử chat và dữ liệu giá để gợi ý hòa giải.")
-            
-            if st.button("🤖 Nhờ AI Đề Xuất Giá Hòa Giải", key=f"btn_ai_{d_id}"):
-                if d_s_pr > 0 and d_b_pr > 0:
-                    with st.spinner("Gemini đang phân tích ngữ cảnh đàm phán..."):
-                        cursor.execute("SELECT sender_name, message FROM deal_messages WHERE deal_id = ? ORDER BY id ASC", (d_id,))
-                        msgs = cursor.fetchall()
-                        chat_ctx = "\n".join([f"- {m[0]}: {m[1]}" for m in msgs]) if msgs else "Chưa có thêm ghi chú."
-                        
-                        ai_res = analyze_fair_price_with_ai(
-                            product=d_prod,
-                            quantity=d_qty,
-                            seller_price=d_s_pr,
-                            buyer_price=d_b_pr,
-                            chat_history=chat_ctx
-                        )
-                        
-                        calc_optimal = float(ai_res.get("suggested_price", (d_s_pr + d_b_pr)/2))
-                        ai_reason = ai_res.get("reasoning", "Mức giá tối ưu cho hai bên.")
-                        
-                        cursor.execute("UPDATE deals SET ai_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0 WHERE id = ?",
-                                       (calc_optimal, calc_optimal, d_id))
-                        
-                        now_m = datetime.datetime.now().strftime("%H:%M")
-                        cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                       (d_id, "did:tide:ai_copilot", "TrustGate AI Copilot", f"Phân tích hoàn tất: Khuyến nghị mức ${calc_optimal:,.1f}/tấn. {ai_reason}", now_m))
-                        conn.commit()
-                        st.rerun()
-                else:
-                    st.warning("Cả hai bên cần đưa ra mức giá ban đầu trước khi gọi AI.")
-                    
-            if d_ai_pr:
-                st.info(f"💡 **AI Khuyến Nghị Chốt:** **${d_ai_pr:,.1f}/tấn**.")
-                if st.button("Chấp Nhận Mức Giá Của AI", key=f"btn_acc_ai_{d_id}"):
-                    cursor.execute("UPDATE deals SET final_price = ? WHERE id = ?", (d_ai_pr, d_id))
-                    conn.commit()
-                    st.rerun()
-
-            st.divider()
-            
+            # CỔNG ĐỒNG THUẬN TIDECLOAK
             st.markdown("#### Phê Duyệt Đồng Thuận (Tide Dual-Consensus)")
             st.caption("Hợp đồng chỉ có hiệu lực khi cả hai bên cùng ký xác nhận mức giá chốt.")
             
@@ -543,7 +512,6 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Chat":
             st.metric("Mức Giá Dự Kiến Chốt", f"${target_close_p:,.1f} / tấn")
             
             c_s_btn, c_b_btn = st.columns(2)
-            
             with c_s_btn:
                 if d_s_sign == 1:
                     st.success("✅ Người bán đã ký")
