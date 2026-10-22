@@ -101,10 +101,34 @@ st.markdown("""
 # ==========================================
 # 1. KHỞI TẠO CƠ SỞ DỮ LIỆU SQLITE
 # ==========================================
+# ==========================================
+# 1. KHỞI TẠO CƠ SỞ DỮ LIỆU SQLITE (TỰ ĐỘNG CẬP NHẬT SCHEMA)
+# ==========================================
 def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
     
+    # Kiểm tra tính tương thích của cấu trúc bảng cũ
+    recreate_needed = False
+    try:
+        cursor.execute("SELECT phone FROM tide_identities LIMIT 1")
+    except sqlite3.OperationalError:
+        recreate_needed = True
+
+    try:
+        cursor.execute("SELECT status FROM deals LIMIT 1")
+    except sqlite3.OperationalError:
+        recreate_needed = True
+
+    # Nếu cấu trúc bảng cũ không khớp với phiên bản mới, tự động làm mới bảng
+    if recreate_needed:
+        cursor.execute("DROP TABLE IF EXISTS tide_identities")
+        cursor.execute("DROP TABLE IF EXISTS market_pool")
+        cursor.execute("DROP TABLE IF EXISTS deals")
+        cursor.execute("DROP TABLE IF EXISTS deal_messages")
+        conn.commit()
+
+    # 1. Bảng lưu danh tính phân tán TideCloak
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS tide_identities (
         did_address TEXT PRIMARY KEY,
@@ -118,6 +142,7 @@ def init_db():
     )
     """)
     
+    # 2. Bảng Sàn Thị Trường Chung
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS market_pool (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,6 +157,7 @@ def init_db():
     )
     """)
     
+    # 3. Bảng Phiên Thương Lượng & Hợp Đồng
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS deals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,6 +176,7 @@ def init_db():
     )
     """)
     
+    # 4. Bảng Tin Nhắn Phòng Chat
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS deal_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,6 +188,7 @@ def init_db():
     )
     """)
     
+    # Khởi tạo dữ liệu mẫu nếu chưa có
     cursor.execute("SELECT COUNT(*) FROM tide_identities")
     if cursor.fetchone()[0] == 0:
         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
