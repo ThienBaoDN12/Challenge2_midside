@@ -86,28 +86,20 @@ def init_db():
     conn = sqlite3.connect("database.db", check_same_thread=False)
     cursor = conn.cursor()
     
-    try:
-        cursor.execute("SELECT phone FROM tide_identities LIMIT 1")
-    except sqlite3.OperationalError:
-        cursor.execute("DROP TABLE IF EXISTS tide_identities")
-        cursor.execute("DROP TABLE IF EXISTS market_pool")
-        cursor.execute("DROP TABLE IF EXISTS deals")
-        cursor.execute("DROP TABLE IF EXISTS deal_messages")
-        conn.commit()
-
+    # 1. Bảng lưu danh tính phân tán TideCloak (Không còn lưu cứng vai trò bán/mua)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS tide_identities (
         did_address TEXT PRIMARY KEY,
         public_key TEXT,
         fullname TEXT,
         org_name TEXT,
-        role TEXT,
         country TEXT,
         phone TEXT,
         created_at TEXT
     )
     """)
     
+    # 2. Bảng Sàn Thị Trường Chung
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS market_pool (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +114,7 @@ def init_db():
     )
     """)
     
+    # 3. Bảng Phiên Thương Lượng
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS deals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +133,7 @@ def init_db():
     )
     """)
     
+    # 4. Bảng Lịch Sử Tin Nhắn
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS deal_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,23 +145,26 @@ def init_db():
     )
     """)
     
+    # Khởi tạo dữ liệu mẫu nếu chưa có
     cursor.execute("SELECT COUNT(*) FROM tide_identities")
     if cursor.fetchone()[0] == 0:
         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-        did_seller = "did:tide:vn_lamvien_7a8f90b"
-        pk_seller = "pk_secp256k1_vn_04e8b910a3c4..."
-        cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       (did_seller, pk_seller, "Trần Thu Hà", "Nông sản Lâm Viên", "Bên Bán (Việt Nam)", "Việt Nam", "0912345678", now))
+        did_vn = "did:tide:vn_lamvien_7a8f90b"
+        pk_vn = "pk_secp256k1_vn_04e8b910a3c4..."
+        cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (did_vn, pk_vn, "Trần Thu Hà", "Nông sản Lâm Viên", "Việt Nam", "0912345678", now))
         
-        did_buyer = "did:tide:kh_mekong_3d4e12a"
-        pk_buyer = "pk_secp256k1_kh_02c77d9811f2..."
-        cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       (did_buyer, pk_buyer, "Sok Dara", "Mekong Fresh Trading", "Bên Mua (Campuchia)", "Campuchia", "0988888999", now))
+        did_kh = "did:tide:kh_mekong_3d4e12a"
+        pk_kh = "pk_secp256k1_kh_02c77d9811f2..."
+        cursor.execute("INSERT OR REPLACE INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (did_kh, pk_kh, "Sok Dara", "Mekong Fresh Trading", "Campuchia", "0988888999", now))
         
+        # Lâm Viên đăng bán cà phê
         cursor.execute("INSERT INTO market_pool (post_type, owner_did, org_name, product_name, quantity, price, location, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       ("BÁN", did_seller, "Nông sản Lâm Viên", "Cà phê Robusta nhân xanh S16", "20 tấn", 2200.0, "Đức Trọng, Lâm Đồng", now))
+                       ("BÁN", did_vn, "Nông sản Lâm Viên", "Cà phê Robusta nhân xanh S16", "20 tấn", 2200.0, "Đức Trọng, Lâm Đồng", now))
+        # Mekong Fresh đăng nhu cầu cần mua tiêu
         cursor.execute("INSERT INTO market_pool (post_type, owner_did, org_name, product_name, quantity, price, location, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       ("MUA", did_buyer, "Mekong Fresh Trading", "Hồ tiêu đen khô 500g/l", "10 tấn", 4100.0, "Cửa khẩu Mộc Bài / Phnom Penh", now))
+                       ("MUA", did_kh, "Mekong Fresh Trading", "Hồ tiêu đen khô 500g/l", "10 tấn", 4100.0, "Cửa khẩu Mộc Bài / Phnom Penh", now))
         
     conn.commit()
     return conn
@@ -182,14 +179,14 @@ if "current_deal_id" not in st.session_state:
     st.session_state.current_deal_id = None
 
 # ==========================================
-# 2. HÀM TRỢ LÝ CHIẾN LƯỢC GIÁ (AI STRATEGY)
+# 2. HÀM TRỢ LÝ CHIẾN LƯỢC GIÁ (AI COPILOT)
 # ==========================================
 def get_ai_price_strategy(user_role, product, quantity, target_price, partner_price):
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     
     prompt = f"""
     Bạn là Chuyên gia đàm phán kinh tế nông sản (TrustGate AI Strategy Advisor).
-    Vai trò người dùng của tôi: {user_role}
+    Vai trò người dùng trong phiên này: {user_role}
     Mặt hàng: {product} (Khối lượng: {quantity})
     Mức giá đối tác đang đưa ra: {partner_price} USD/tấn
     Mức giá hiện tại của người dùng: {target_price} USD/tấn
@@ -216,7 +213,7 @@ def get_ai_price_strategy(user_role, product, quantity, target_price, partner_pr
             except Exception:
                 continue
 
-    # Fallback số học
+    # Fallback số học chuẩn vị thế
     if "Mua" in user_role:
         agg = round(partner_price * 0.95, 1) if partner_price > 0 else 2100.0
         bal = round((target_price + partner_price) / 2.0 + 15.0, 1) if target_price > 0 else round(partner_price * 0.98, 1)
@@ -233,17 +230,17 @@ def get_ai_price_strategy(user_role, product, quantity, target_price, partner_pr
 # ==========================================
 if st.session_state.auth_user is None:
     st.title("🛡️ TrustGate AI — Cổng Xác Thực TideCloak")
-    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp.")
+    st.caption("Xác thực phi tập trung: Hệ thống không lưu trữ mật khẩu hay khóa riêng của doanh nghiệp[cite: 1, 7].")
     
     t1, t2, t3 = st.tabs([
         "🔐 Đăng Nhập Nhanh Bằng DID", 
         "🔍 Quên Mã DID? (Khôi Phục)", 
-        "📝 Đăng Ký Cặp Khóa Mới"
+        "📝 Đăng Ký Danh Tính Doanh Nghiệp"
     ])
     
     with t1:
         st.subheader("Chọn hoặc nhập mã danh tính số (DID)")
-        cursor.execute("SELECT did_address, fullname, org_name, role FROM tide_identities")
+        cursor.execute("SELECT did_address, fullname, org_name, country FROM tide_identities")
         all_accounts = cursor.fetchall()
         acc_dict = {f"{a[1]} — {a[2]} ({a[3]})": a[0] for a in all_accounts}
         
@@ -258,7 +255,7 @@ if st.session_state.auth_user is None:
             
             if btn_sub_login:
                 if did_inp.strip():
-                    cursor.execute("SELECT did_address, fullname, org_name, role, country, phone, public_key FROM tide_identities WHERE did_address = ?", 
+                    cursor.execute("SELECT did_address, fullname, org_name, country, phone, public_key FROM tide_identities WHERE did_address = ?", 
                                    (did_inp.strip(),))
                     user_data = cursor.fetchone()
                     if user_data:
@@ -266,10 +263,9 @@ if st.session_state.auth_user is None:
                             "did": user_data[0],
                             "fullname": user_data[1],
                             "org_name": user_data[2],
-                            "role": user_data[3],
-                            "country": user_data[4],
-                            "phone": user_data[5],
-                            "public_key": user_data[6]
+                            "country": user_data[3],
+                            "phone": user_data[4],
+                            "public_key": user_data[5]
                         }
                         st.success(f"Xác thực thành công! Xin chào {user_data[1]} ({user_data[2]}).")
                         st.rerun()
@@ -281,49 +277,48 @@ if st.session_state.auth_user is None:
     with t2:
         st.subheader("Tra cứu và Khôi phục mã DID bị quên")
         with st.form("form_recover_did"):
-            search_query = st.text_input("Nhập Số điện thoại hoặc Họ tên người đại diện:")
+            search_query = st.text_input("Nhập Số điện thoại hoặc Tên doanh nghiệp:")
             btn_search = st.form_submit_button("Tra Cứu Danh Tính")
             if btn_search:
                 if search_query.strip():
                     cursor.execute("""
-                    SELECT did_address, fullname, org_name, role, phone FROM tide_identities 
+                    SELECT did_address, fullname, org_name, country, phone FROM tide_identities 
                     WHERE phone LIKE ? OR fullname LIKE ? OR org_name LIKE ?
                     """, (f"%{search_query.strip()}%", f"%{search_query.strip()}%", f"%{search_query.strip()}%"))
                     found_users = cursor.fetchall()
                     if found_users:
                         st.success(f"Tìm thấy {len(found_users)} danh tính phù hợp:")
                         for u in found_users:
-                            st.code(f"Mã DID: {u[0]}\nNgười đại diện: {u[1]} | Công ty: {u[2]} ({u[3]})\nSĐT: {u[4]}", language="text")
+                            st.code(f"Mã DID: {u[0]}\nĐại diện: {u[1]} | Công ty: {u[2]} (Quốc gia: {u[3]})\nSĐT: {u[4]}", language="text")
                     else:
-                        st.warning("Không tìm thấy thông tin nào phù hợp với từ khóa.")
+                        st.warning("Không tìm thấy thông tin nào phù hợp.")
                 else:
-                    st.warning("Vui lòng nhập thông tin để tra cứu.")
+                    st.warning("Vui lòng nhập từ khóa tra cứu.")
 
     with t3:
-        st.subheader("Cấp phát danh tính phân tán mới")
+        st.subheader("Đăng ký danh tính mới (Chỉ cần chọn quốc gia)")
         with st.form("form_tide_reg"):
             r_name = st.text_input("Họ và tên người đại diện")
             r_org = st.text_input("Tên doanh nghiệp / Hợp tác xã")
             r_phone = st.text_input("Số điện thoại liên hệ", "0912345678")
-            r_role = st.selectbox("Vai trò giao dịch", ["Bên Bán (Việt Nam)", "Bên Mua (Campuchia)"])
+            r_country = st.selectbox("Quốc gia đăng ký", ["Việt Nam", "Campuchia"])
             btn_reg = st.form_submit_button("Cấp Phát Mã Tide DID Mới")
             
             if btn_reg:
                 if r_name and r_org and r_phone:
-                    prefix = "vn" if "Việt Nam" in r_role else "kh"
-                    country = "Việt Nam" if "Việt Nam" in r_role else "Campuchia"
+                    prefix = "vn" if r_country == "Việt Nam" else "kh"
                     rnd_hash = hashlib.sha256(f"{r_name}{r_org}{datetime.datetime.now()}".encode()).hexdigest()[:8]
                     gen_did = f"did:tide:{prefix}_{rnd_hash}"
                     gen_pk = f"pk_secp256k1_{prefix}_{rnd_hash}8f9a"
                     now_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
                     
-                    cursor.execute("INSERT INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                   (gen_did, gen_pk, r_name, r_org, r_role, country, r_phone, now_str))
+                    cursor.execute("INSERT INTO tide_identities VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                   (gen_did, gen_pk, r_name, r_org, r_country, r_phone, now_str))
                     conn.commit()
-                    st.success("Cấp phát danh tính thành công!")
-                    st.code(f"Mã DID: {gen_did}\nPublic Key: {gen_pk}", language="text")
+                    st.success("Cấp phát danh tính thành công! Hãy chuyển qua tab Đăng nhập.")
+                    st.code(f"Mã DID của bạn: {gen_did}\nPublic Key: {gen_pk}", language="text")
                 else:
-                    st.warning("Vui lòng điền đầy đủ họ tên, tên tổ chức và số điện thoại.")
+                    st.warning("Vui lòng điền đầy đủ thông tin.")
     st.stop()
 
 # ==========================================
@@ -333,12 +328,12 @@ cur_u = st.session_state.auth_user
 
 with st.sidebar:
     st.header("🛡️ Phiên Danh Tính TideCloak")
-    st.markdown(f"**Người đại diện:** {cur_u['fullname']}")
+    st.markdown(f"**Đại diện:** {cur_u['fullname']}")
     st.markdown(f"**Tổ chức:** {cur_u['org_name']}")
-    st.markdown(f"**Vai trò:** {cur_u['role']}")
+    st.markdown(f"**Quốc gia:** {cur_u['country']}")
     st.markdown(f"**Điện thoại:** {cur_u.get('phone', 'N/A')}")
     st.code(f"{cur_u['did']}", language="text")
-    st.caption("Trạng thái: ĐÃ XÁC THỰC PHÂN TÁN")
+    st.caption("Trạng thái: ĐÃ XÁC THỰC PHÂN TÁN[cite: 7]")
     
     st.divider()
     if st.button("🚪 Đăng Xuất"):
@@ -347,7 +342,7 @@ with st.sidebar:
         st.rerun()
 
 st.title("🌾 TrustGate AI — Sàn Thương Lượng Nông Sản Đa Bên")
-st.markdown("**Kiến trúc không quyền kiểm soát đơn phương (No Unilateral Control)** — Được bảo vệ bởi **TideCloak**.")
+st.markdown("**Kiến trúc không quyền kiểm soát đơn phương (No Unilateral Control)** — Được bảo vệ bởi **TideCloak**[cite: 1, 7].")
 
 nav_options = [
     "🛒 1. Sàn Thị Trường & Yêu Cầu", 
@@ -427,28 +422,47 @@ if st.session_state.active_nav == "🛒 1. Sàn Thị Trường & Yêu Cầu":
                     
                 with c_act:
                     if powner_did != cur_u['did']:
-                        if st.button("🤝 Thương Lượng", key=f"btn_neg_{pid}"):
-                            seller = powner_did if ptype == "BÁN" else cur_u['did']
-                            buyer = cur_u['did'] if ptype == "BÁN" else powner_did
-                            
-                            init_seller_p = pprice if ptype == "BÁN" else 0.0
-                            init_buyer_p = 0.0 if ptype == "BÁN" else pprice
-                            init_final_p = pprice
-                            
+                        # Xác định vai trò tự động khi bấm thương lượng:
+                        # Nếu tin là BÁN -> Người bấm là MUA.
+                        # Nếu tin là MUA -> Người bấm là BÁN.
+                        my_action_role = "MUA" if ptype == "BÁN" else "BÁN"
+                        
+                        if st.button(f"🤝 Thương Lượng ({my_action_role})", key=f"btn_neg_{pid}"):
+                            # 1. KIỂM TRA XEM ĐÃ CÓ PHIÊN THƯƠNG LƯỢNG NÀO TỒN TẠI GIỮA 2 BÊN CHƯA (CHỐNG TRÙNG LẶP)
                             cursor.execute("""
-                            INSERT INTO deals (post_id, seller_did, buyer_did, product_name, quantity, seller_price, buyer_price, final_price, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NEGOTIATING')
-                            """, (pid, seller, buyer, pname, pqty, init_seller_p, init_buyer_p, init_final_p))
-                            new_deal_id = cursor.lastrowid
+                            SELECT id FROM deals 
+                            WHERE post_id = ? AND ((seller_did = ? AND buyer_did = ?) OR (seller_did = ? AND buyer_did = ?))
+                            AND status != 'TERMINATED'
+                            """, (pid, cur_u['did'], powner_did, powner_did, cur_u['did']))
+                            existing_deal = cursor.fetchone()
                             
-                            now_msg = datetime.datetime.now().strftime("%H:%M")
-                            cursor.execute("""
-                            INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at)
-                            VALUES (?, ?, ?, ?, ?)
-                            """, (new_deal_id, cur_u['did'], cur_u['fullname'], f"Xin chào, tôi muốn mở phòng thương lượng cho đơn hàng {pname} ({pqty}).", now_msg))
+                            if existing_deal:
+                                # Tái sử dụng phiên cũ, không tạo trùng
+                                chosen_deal_id = existing_deal[0]
+                            else:
+                                # Tạo mới nếu chưa từng có
+                                seller = powner_did if ptype == "BÁN" else cur_u['did']
+                                buyer = cur_u['did'] if ptype == "BÁN" else powner_did
+                                
+                                init_seller_p = pprice if ptype == "BÁN" else 0.0
+                                init_buyer_p = 0.0 if ptype == "BÁN" else pprice
+                                init_final_p = pprice
+                                
+                                cursor.execute("""
+                                INSERT INTO deals (post_id, seller_did, buyer_did, product_name, quantity, seller_price, buyer_price, final_price, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NEGOTIATING')
+                                """, (pid, seller, buyer, pname, pqty, init_seller_p, init_buyer_p, init_final_p))
+                                chosen_deal_id = cursor.lastrowid
+                                
+                                now_msg = datetime.datetime.now().strftime("%H:%M")
+                                cursor.execute("""
+                                INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at)
+                                VALUES (?, ?, ?, ?, ?)
+                                """, (chosen_deal_id, cur_u['did'], cur_u['fullname'], f"Xin chào, tôi tham gia thương lượng lô hàng {pname} ({pqty}) với vai trò Bên {my_action_role}.", now_msg))
+                                conn.commit()
                             
-                            conn.commit()
-                            st.session_state.current_deal_id = new_deal_id
+                            # TỰ ĐỘNG CHUYỂN HƯỚNG THẲNG VÀO PHÒNG THƯƠNG LƯỢNG
+                            st.session_state.current_deal_id = chosen_deal_id
                             st.session_state.active_nav = "💬 2. Phòng Thương Lượng & Hợp Đồng"
                             st.rerun()
                     else:
@@ -498,13 +512,12 @@ if st.session_state.active_nav == "🛒 1. Sàn Thị Trường & Yêu Cầu":
         st.subheader("Đăng Sản Phẩm Hoặc Nhu Cầu Mua Hàng Mới")
         with st.form("form_add_new_pool_item"):
             col_t1, col_t2 = st.columns(2)
-            def_idx = 0 if "Bán" in cur_u['role'] else 1
-            post_t = col_t1.selectbox("Loại tin đăng:", ["BÁN (Chào hàng)", "MUA (Cần mua)"], index=def_idx)
+            post_t = col_t1.selectbox("Loại tin đăng:", ["BÁN (Chào hàng nguồn cung)", "MUA (Đăng nhu cầu thu mua)"])
             item_name = col_t2.text_input("Tên nông sản:", placeholder="Ví dụ: Cà phê Robusta Grade 1 S16")
             
             col_t3, col_t4 = st.columns(2)
             item_qty = col_t3.text_input("Khối lượng dự kiến:", "20 tấn")
-            item_price = col_t4.number_input("Mức giá mong muốn ($/tấn):", min_value=10.0, value=2200.0, step=10.0)
+            item_price = col_t4.number_input("Mức giá đề xuất ($/tấn):", min_value=10.0, value=2200.0, step=10.0)
             
             item_loc = st.text_input("Địa điểm giao nhận hàng:", "Cửa khẩu Mộc Bài - Tây Ninh / Phnom Penh")
             
@@ -553,8 +566,10 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
         
         d_id, _, d_s_did, d_b_did, d_prod, d_qty, d_s_pr, d_b_pr, d_ai_pr, d_fin_pr, d_s_sign, d_b_sign, d_stat = deal
         
+        # XÁC ĐỊNH VAI TRÒ CHÍNH XÁC CỦA NGƯỜI ĐANG ĐĂNG NHẬP TRONG PHIÊN NÀY
         is_seller = (cur_u['did'] == d_s_did)
         is_buyer = (cur_u['did'] == d_b_did)
+        my_role_name = "Bên Bán" if is_seller else "Bên Mua"
         
         partner_did = d_b_did if is_seller else d_s_did
         cursor.execute("SELECT fullname, org_name, country, phone FROM tide_identities WHERE did_address = ?", (partner_did,))
@@ -563,12 +578,14 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
         partner_org = partner_info[1] if partner_info else "Công ty đối tác"
         partner_phone = partner_info[3] if partner_info else "0900000000"
 
+        st.caption(f"Bạn đang tham gia phiên này với tư cách: **{my_role_name}** | Đối tác: **{partner_name} ({partner_org})**")
+
         c_left, c_right = st.columns([1.1, 1.2])
         
         # ---------------- CỘT TRÁI: TRAO ĐỔI P2P & TRỢ LÝ AI ----------------
         with c_left:
             st.markdown("### 💬 Trao Đổi Thương Lượng Hai Bên")
-            st.caption("Kênh trò chuyện bảo mật trực tiếp giữa Bên Bán và Bên Mua.")
+            st.caption("Kênh trò chuyện bảo mật trực tiếp giữa Bên Bán và Bên Mua[cite: 7].")
             
             chat_container = st.container(height=340)
             cursor.execute("SELECT sender_did, sender_name, message, created_at FROM deal_messages WHERE deal_id = ? ORDER BY id ASC", (d_id,))
@@ -599,7 +616,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
             # CỬA SỔ POP-OVER TRỢ LÝ AI
             with st.popover("💡 Mở Trợ Lý Chiến Lược Giá (AI Copilot)", use_container_width=True):
                 st.markdown("#### 🤖 Trợ Lý Chiến Thuật Đàm Phán Gemini")
-                st.caption("AI phân tích giá của đối tác và gợi ý mức giá đè tối ưu trước khi hòa giải.")
+                st.caption(f"AI phân tích theo góc nhìn của **{my_role_name}** để tối ưu hóa lợi ích[cite: 7].")
                 
                 my_p = d_s_pr if is_seller else d_b_pr
                 opp_p = d_b_pr if is_seller else d_s_pr
@@ -607,8 +624,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                 if st.button("🔍 Phân Tích & Gợi Ý Mức Trả Giá Tối Ưu", key=f"btn_ai_strat_{d_id}"):
                     if opp_p > 0:
                         with st.spinner("AI đang tính toán chiến lược..."):
-                            role_str = "Bên Bán" if is_seller else "Bên Mua"
-                            strat = get_ai_price_strategy(role_str, d_prod, d_qty, my_p, opp_p)
+                            strat = get_ai_price_strategy(my_role_name, d_prod, d_qty, my_p, opp_p)
                             st.session_state[f"ai_strat_{d_id}"] = strat
                     else:
                         st.warning("Đối tác chưa đưa ra mức giá nào để phân tích.")
@@ -633,7 +649,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                         conn.commit()
                         st.rerun()
 
-            # Thiết lập giá đàm phán thủ công
+            # Thiết lập giá đàm phán chuẩn vai trò
             with st.form(f"form_price_{d_id}"):
                 c_p1, c_p2 = st.columns(2)
                 c_p1.write(f"🏷️ **Bên Bán:** " + (f"`${d_s_pr:,.1f}`" if d_s_pr > 0 else "*(Chưa chào)*"))
@@ -641,7 +657,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                 
                 if is_seller:
                     val_init = float(d_s_pr) if d_s_pr > 0 else 2200.0
-                    new_val = st.number_input("Giá Bên Bán đề xuất ($/tấn):", value=val_init, step=10.0)
+                    new_val = st.number_input("Giá Bên Bán chào ($/tấn):", value=val_init, step=10.0)
                 else:
                     val_init = float(d_b_pr) if d_b_pr > 0 else 2150.0
                     new_val = st.number_input("Giá Bên Mua trả ($/tấn):", value=val_init, step=10.0)
@@ -651,11 +667,11 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     if is_seller:
                         cursor.execute("UPDATE deals SET seller_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?", (new_val, new_val, d_id))
                         cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                       (d_id, cur_u['did'], cur_u['fullname'], f"Tôi gửi đề xuất giá mới là ${new_val:,.1f}/tấn.", now_m))
+                                       (d_id, cur_u['did'], cur_u['fullname'], f"Bên Bán cập nhật giá chào là ${new_val:,.1f}/tấn.", now_m))
                     else:
                         cursor.execute("UPDATE deals SET buyer_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?", (new_val, new_val, d_id))
                         cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                       (d_id, cur_u['did'], cur_u['fullname'], f"Tôi trả giá mới là ${new_val:,.1f}/tấn.", now_m))
+                                       (d_id, cur_u['did'], cur_u['fullname'], f"Bên Mua trả mức giá mới là ${new_val:,.1f}/tấn.", now_m))
                     conn.commit()
                     st.rerun()
 
@@ -695,7 +711,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     </table>
                     <hr style="border: 1px solid #c8e6c9;">
                     <p style="font-size:0.85rem; color:#558b2f;">
-                        <i>Xác thực TideCloak: Hợp đồng đã nhận đủ 2/2 chữ ký phân tán theo nguyên tắc No Unilateral Control.</i>
+                        <i>Xác thực TideCloak: Hợp đồng đã nhận đủ 2/2 chữ ký phân tán theo nguyên tắc No Unilateral Control[cite: 1, 7].</i>
                     </p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -737,9 +753,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     conn.commit()
                     st.rerun()
 
-            # ==========================================================
-            # 3. KHI HỢP ĐỒNG BỊ TỪ CHỐI (REJECTED) -> LOGIC ĐÀM PHÁN ĐÚNG VỊ THẾ
-            # ==========================================================
+            # 3. KHI HỢP ĐỒNG BỊ TỪ CHỐI (REJECTED) -> LOGIC ĐÀM PHÁN CHUẨN VỊ THẾ
             elif d_stat == 'REJECTED':
                 st.markdown(f"""
                 <div class="paper-contract-cancelled">
@@ -749,23 +763,21 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     </div>
                     <hr style="border: 1px solid #ffcdd2;">
                     <p style="color:#c62828;">Mức giá đề xuất <b>${contract_price:,.1f}/tấn</b> chưa đạt được sự đồng thuận từ hai bên.</p>
-                    <p style="font-size:0.9rem; color:#555;">Hệ thống cung cấp các phương án hành động phù hợp với vai trò của bạn:</p>
+                    <p style="font-size:0.9rem; color:#555;">Dưới vai trò <b>{my_role_name}</b>, bạn có thể lựa chọn hướng xử lý tiếp theo:</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
                 st.markdown("#### 📌 Lựa chọn hướng xử lý tiếp theo:")
                 c_opt1, c_opt2, c_opt3 = st.columns(3)
                 
-                # PHƯƠNG ÁN 1: BÊN MUA CHỦ ĐỘNG ÉP GIÁ XUỐNG THẤP HƠN / BÊN BÁN HẠ GIÁ XUỐNG
+                # PHƯƠNG ÁN 1: BÊN MUA ÉP GIÁ XUỐNG THẤP HƠN / BÊN BÁN HẠ GIÁ XUỐNG
                 with c_opt1:
-                    st.markdown("##### 1. Đưa mức giá phản đòn mới")
+                    st.markdown("##### 1. Đưa mức giá phản đòn")
                     if is_buyer:
-                        # Bên Mua từ chối giá đắt -> Chủ động ép giá xuống thấp hơn $50
                         counter_p = max(10.0, round(contract_price - 50.0, 1))
                         btn_txt = f"📉 Trả giá thấp hơn: ${counter_p:,.1f}/tấn"
-                        guide = f"Ép mức giá xuống ${counter_p:,.1f} để buộc Bên Bán phải cân nhắc lại."
+                        guide = f"Ép mức giá xuống ${counter_p:,.1f} để Bên Bán phải cân nhắc lại."
                     else:
-                        # Bên Bán bị từ chối -> Hạ giá bán xuống $30 để cứu deal
                         counter_p = max(10.0, round(contract_price - 30.0, 1))
                         btn_txt = f"📉 Hạ giá bán xuống: ${counter_p:,.1f}/tấn"
                         guide = f"Hạ giá chào xuống ${counter_p:,.1f} để đưa về gần ngân sách Bên Mua."
@@ -782,16 +794,16 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                             cursor.execute("UPDATE deals SET seller_price = ?, final_price = ?, seller_signed = 0, buyer_signed = 0, status = 'NEGOTIATING' WHERE id = ?",
                                            (counter_p, counter_p, d_id))
                             cursor.execute("INSERT INTO deal_messages (deal_id, sender_did, sender_name, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                                           (d_id, cur_u['did'], cur_u['fullname'], f"Tôi chấp nhận hạ giá chào bán xuống ${counter_p:,.1f}/tấn để tìm kiếm tiếng nói chung.", now_m))
+                                           (d_id, cur_u['did'], cur_u['fullname'], f"Tôi chấp nhận hạ giá chào bán xuống ${counter_p:,.1f}/tấn để tiếp tục đàm phán.", now_m))
                         conn.commit()
                         st.rerun()
 
-                # PHƯƠNG ÁN 2: CHỜ ĐỐI PHƯƠNG CẬP NHẬT GIÁ MỚI
+                # PHƯƠNG ÁN 2: CHỜ ĐỐI PHƯƠNG ĐƯA GIÁ MỚI
                 with c_opt2:
                     st.markdown("##### 2. Giữ nguyên vị thế & Chờ đợi")
                     if is_buyer:
                         wait_guide = "Từ chối và yêu cầu Bên Bán phải là người chủ động giảm giá xuống."
-                        wait_msg = "Tôi từ chối mức giá này. Đề nghị Bên Bán cân nhắc đưa ra mức giá chào tốt hơn."
+                        wait_msg = "Tôi từ chối mức giá này. Đề nghị Bên Bán cân nhắc đưa ra mức giá mềm hơn."
                     else:
                         wait_guide = "Từ chối và yêu cầu Bên Mua phải nâng mức trả giá lên nếu muốn mua."
                         wait_msg = "Mức giá này quá thấp, đề nghị Bên Mua nâng ngân sách nếu thực sự muốn lấy lô hàng."
@@ -817,9 +829,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                         conn.commit()
                         st.rerun()
 
-            # ==========================================================
             # 4. HỢP ĐỒNG ĐANG CHỜ PHÊ DUYỆT (PENDING)
-            # ==========================================================
             else:
                 st.markdown(f"""
                 <div class="paper-contract-pending">
@@ -839,7 +849,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
                     </table>
                     <hr style="border: 1px solid #d7ccc8;">
                     <p style="font-size:0.85rem; color:#795548;">
-                        <i>Nguyên tắc Không Kiểm Soát Đơn Phương: Bạn có thể rời phòng và quay lại bất cứ lúc nào, tờ hợp đồng vẫn giữ nguyên trạng thái cho đến khi đủ 2 bên ký hoặc bị từ chối.</i>
+                        <i>Nguyên tắc Không Kiểm Soát Đơn Phương: Hợp đồng chỉ phát sinh hiệu lực pháp lý khi cả hai bên cùng ký xác nhận[cite: 1, 7].</i>
                     </p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -912,7 +922,7 @@ elif st.session_state.active_nav == "💬 2. Phòng Thương Lượng & Hợp Đ
 # ========================================================
 elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak":
     st.subheader("🛡️ Trung Tâm Giám Sát Phân Quyền & Kiểm Thử Bảo Mật TideCloak")
-    st.caption("Kiểm chứng cơ chế No Unilateral Control và tính toàn vẹn dưới các góc nhìn khác nhau.")
+    st.caption("Kiểm chứng cơ chế No Unilateral Control và tính toàn vẹn dưới các góc nhìn khác nhau[cite: 1, 7].")
     
     perspective = st.radio(
         "Lựa chọn góc nhìn kiểm tra cơ chế bảo mật:",
@@ -930,8 +940,8 @@ elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak
         st.info("""
         **Quyền hạn thực tế của Admin:**
         - Chỉ có thể giám sát trạng thái mạng, dung lượng giao dịch và siêu dữ liệu (metadata) vận hành.
-        - **Hoàn toàn KHÔNG sở hữu Khóa Riêng (Private Key)** của Người Bán hay Người Mua.
-        - Không thể tự ý ký thay, không thể giải mã kho dữ liệu bí mật và không thể cưỡng chế chốt hợp đồng.
+        - **Hoàn toàn KHÔNG sở hữu Khóa Riêng (Private Key)** của Người Bán hay Người Mua[cite: 1, 7].
+        - Không thể tự ý ký thay, không thể giải mã kho dữ liệu bí mật và không thể cưỡng chế chốt hợp đồng[cite: 1, 7].
         """)
         
         st.markdown("##### 🧪 Thử nghiệm tấn công / Can thiệp đơn phương:")
@@ -941,41 +951,41 @@ elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak
                 st.error("""
                 ❌ **ACCESS DENIED BY TIDECLOAK CORE:**
                 - Mã vi phạm: `ERR_NO_UNILATERAL_CONTROL_VIOLATION`
-                - Lý do: Yêu cầu thiếu chữ ký xác thực từ Private Key của doanh nghiệp tham gia.
-                - Kết luận: Quản trị viên không có quyền đơn phương can thiệp thỏa thuận!
+                - Lý do: Yêu cầu thiếu chữ ký xác thực từ Private Key của doanh nghiệp tham gia[cite: 1, 7].
+                - Kết luận: Quản trị viên không có quyền đơn phương can thiệp thỏa thuận[cite: 1, 7]!
                 """)
         with c_ad2:
             if st.button("🔍 Admin Thử Đọc Trộm Giá Vốn Riêng Tư"):
-                st.error("❌ **DECRYPTION FAILED:** Payload đã được mã hóa phân tán. Không có ủy quyền đồng thuận từ cả hai bên.")
+                st.error("❌ **DECRYPTION FAILED:** Payload đã được mã hóa phân tán. Không có ủy quyền đồng thuận từ cả hai bên[cite: 7].")
                 
     elif "Bên Bán" in perspective:
         st.markdown("#### 🌾 Góc nhìn Bên Bán (Seller - Việt Nam)")
         st.success("""
         **Quyền kiểm soát dữ liệu của Bên Bán:**
-        - Dữ liệu giá vốn và tồn kho nội bộ được lưu trong Két bí mật (Private Vault), chỉ chia sẻ trường đã duyệt.
-        - Có toàn quyền kích hoạt **Thu hồi khẩn cấp (Emergency Revoke)** để hủy bỏ đàm phán bất cứ lúc nào.
+        - Dữ liệu giá vốn và tồn kho nội bộ được lưu trong Két bí mật (Private Vault), chỉ chia sẻ trường đã duyệt[cite: 7].
+        - Có toàn quyền kích hoạt **Thu hồi khẩn cấp (Emergency Revoke)** để hủy bỏ đàm phán bất cứ lúc nào[cite: 7].
         """)
         
         st.markdown("##### ⚡ Quyền thu hồi chữ ký số:")
         if st.button("🛑 Thu Hồi Chữ Ký Bên Bán (Revoke Seller Signature)"):
             cursor.execute("UPDATE deals SET seller_signed = 0")
             conn.commit()
-            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN BÁN:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed).")
+            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN BÁN:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed)[cite: 7].")
             st.rerun()
 
     else:
         st.markdown("#### 🛒 Góc nhìn Bên Mua (Buyer - Campuchia)")
         st.success("""
         **Quyền kiểm soát dữ liệu của Bên Mua:**
-        - Ngân sách tối đa và hạn mức tín dụng được giữ kín hoàn toàn với Bên Bán và AI.
-        - Nếu Bên Bán tự ý sửa giá sau khi Bên Mua đã ký, hệ thống sẽ tự động hủy bỏ chữ ký cũ để bảo vệ Bên Mua.
+        - Ngân sách tối đa và hạn mức tín dụng được giữ kín hoàn toàn với Bên Bán và AI[cite: 7].
+        - Nếu Bên Bán tự ý sửa giá sau khi Bên Mua đã ký, hệ thống sẽ tự động hủy bỏ chữ ký cũ để bảo vệ Bên Mua[cite: 7].
         """)
         
         st.markdown("##### ⚡ Quyền thu hồi chữ ký số:")
         if st.button("🛑 Thu Hồi Chữ Ký Bên Mua (Revoke Buyer Signature)"):
             cursor.execute("UPDATE deals SET buyer_signed = 0")
             conn.commit()
-            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN MUA:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed).")
+            st.warning("🔒 **ĐÃ THU HỒI CHỮ KÝ BÊN MUA:** Phiên đàm phán lập tức quay về trạng thái khóa (Fail-Closed)[cite: 7].")
             st.rerun()
 
     st.write("---")
@@ -984,7 +994,7 @@ elif st.session_state.active_nav == "🛡️ 3. Kiểm Tra Bảo Mật TideCloak
     
     audit_data = [
         {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": cur_u['fullname'], "Hành động": f"Xác thực Tide DID ({cur_u['did']})", "Kết quả": "Hợp lệ"},
-        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "TideCloak Consensus Gate", "Hành động": "Kiểm tra ràng buộc Dual-Consensus", "Kết quả": "Enforced"},
-        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "Security Monitor", "Hành động": "Chặn nỗ lực can thiệp đơn phương", "Kết quả": "Bảo vệ thành công"}
+        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "TideCloak Consensus Gate", "Hành động": "Kiểm tra ràng buộc Dual-Consensus", "Kết quả": "Enforced[cite: 7]"},
+        {"Thời gian": datetime.datetime.now().strftime("%H:%M:%S"), "Tác nhân": "Security Monitor", "Hành động": "Chặn nỗ lực can thiệp đơn phương", "Kết quả": "Bảo vệ thành công[cite: 1, 7]"}
     ]
     st.table(pd.DataFrame(audit_data))
